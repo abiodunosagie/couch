@@ -12,7 +12,7 @@ struct MainWindowView: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 56) {
-            RemoteView(client: client, finish: model.finish) { model.typing = true }
+            RemoteView(client: client, voice: model.voice, finish: model.finish)
                 .padding(.vertical, 36)
 
             VStack(alignment: .leading, spacing: 26) {

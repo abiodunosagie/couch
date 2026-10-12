@@ -28,8 +28,8 @@ struct RemoteView: View {
     private static let disconnectedOpacity = 0.72
 
     @ObservedObject var client: RemoteClient
+    var voice: VoiceInput
     var finish: Finish
-    var onKeyboard: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -41,9 +41,7 @@ struct RemoteView: View {
                     RoundKey(finish: finish, help: "Back (Esc)") { client.press(.back) } label: {
                         Image(systemName: "arrow.backward").font(.system(size: 18, weight: .semibold))
                     }
-                    RoundKey(finish: finish, dark: true, help: "Type on the TV (/)", action: onKeyboard) {
-                        Image(systemName: "keyboard").font(.system(size: 17, weight: .medium))
-                    }
+                    VoiceKey(voice: voice, client: client)
                 }
                 GridRow {
                     RoundKey(finish: finish, help: "Home (H)") { client.press(.home) } label: {
@@ -124,6 +122,50 @@ private struct RoundKey<Label: View>: View {
             .buttonStyle(PressStyle(finish: finish, dark: dark, size: size))
             .help(help)
             .accessibilityLabel(help)
+    }
+}
+
+/// The black Assistant key: hold it and speak, release to search, like on the real remote.
+private struct VoiceKey: View {
+    @ObservedObject var voice: VoiceInput
+    @ObservedObject var client: RemoteClient
+    @State private var held = false
+
+    private var live: Bool { voice.recording && client.listening }
+
+    var body: some View {
+        Image(systemName: live ? "waveform" : "mic.fill")
+            .font(.system(size: 18, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 62, height: 62)
+            .background(
+                Circle()
+                    .fill(live ? Color(red: 0.86, green: 0.27, blue: 0.22) : Color(white: held ? 0.22 : 0.1))
+                    .overlay(Circle().strokeBorder(Color.black, lineWidth: 1))
+            )
+            .scaleEffect(held ? 0.93 : 1)
+            .animation(.easeOut(duration: 0.12), value: held)
+            .animation(.easeOut(duration: 0.12), value: live)
+            .contentShape(Circle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !held else { return }
+                        held = true
+                        voice.begin()
+                    }
+                    .onEnded { _ in
+                        held = false
+                        voice.end()
+                    }
+            )
+            .onDisappear {
+                held = false
+                voice.end()
+            }
+            .help("Hold and speak to search the TV")
+            .accessibilityLabel("Voice search, hold and speak")
+            .accessibilityAddTraits(.isButton)
     }
 }
 

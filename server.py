@@ -18,7 +18,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiohttp import WSMsgType, web
-from androidtvremote2 import AndroidTVRemote, CannotConnect, ConnectionClosed, InvalidAuth
+from androidtvremote2 import AndroidTVRemote, CannotConnect, ConnectionClosed, InvalidAuth, VoiceStream
+from androidtvremote2.remote import VOICE_CHUNK_MIN_SIZE
 
 from text_input import EDIT_KEYS, FieldTrackingProtocol
 from tv import check_pairing_code, find_tv, make_remote
@@ -29,6 +30,8 @@ REDISCOVER_AFTER_SECONDS = 30.0
 MAX_TEXT_LENGTH = 2000  # one paste
 MAX_MESSAGE_BYTES = 16384  # room for a 2000 character paste as JSON
 PARENT_CHECK_SECONDS = 5.0
+# A held voice button that never sends "voice_end" (app crashed) must not keep the TV listening.
+MAX_VOICE_SECONDS = 20.0
 BAD_MESSAGE = "Bad message."
 TV_UNREACHABLE = "Can't reach the TV. Is it on and on the same Wi-Fi?"
 
@@ -69,6 +72,10 @@ class TVSession:
         self._background: set[asyncio.Task[Any]] = set()
         self._connector: asyncio.Task[None] | None = None
         self._rediscover: asyncio.TimerHandle | None = None
+        self._voice: VoiceStream | None = None
+        self._voice_owner: web.WebSocketResponse | None = None
+        self._voice_buffer = bytearray()
+        self._voice_timeout: asyncio.TimerHandle | None = None
 
     # ------------------------------------------------------------ state
 
@@ -273,7 +280,54 @@ class TVSession:
             raise UserError("Unknown app.")
         self._require_connected().send_launch_app_command(link)
 
+    # ------------------------------------------------------------ voice
+
+    async def voice_start(self, owner: web.WebSocketResponse) -> None:
+        """Open the TV's voice search; audio then arrives as binary frames from `owner`."""
+        remote = self._require_connected()
+        if self._voice is not None:
+            raise UserError("Already listening.")
+        if not remote.is_voice_enabled:
+            raise UserError("This TV does not accept voice from Couch.")
+        try:
+            self._voice = await remote.start_voice()
+        except (TimeoutError, ConnectionClosed) as exc:
+            log.info("voice did not start: %r", exc)
+            raise UserError("The TV did not start listening. Try again.") from None
+        self._voice_owner = owner
+        self._voice_buffer.clear()
+        self._voice_timeout = asyncio.get_running_loop().call_later(MAX_VOICE_SECONDS, self.voice_end)
+        await owner.send_json({"type": "voice", "listening": True})
+
+    def voice_audio(self, owner: web.WebSocketResponse, data: bytes) -> None:
+        """16-bit mono PCM at 8 kHz. Sent on in chunks of the size the TV wants, so it gets no padding."""
+        if self._voice is None or owner is not self._voice_owner:
+            return
+        self._voice_buffer += data
+        while len(self._voice_buffer) >= VOICE_CHUNK_MIN_SIZE:
+            self._voice.send_chunk(bytes(self._voice_buffer[:VOICE_CHUNK_MIN_SIZE]))
+            del self._voice_buffer[:VOICE_CHUNK_MIN_SIZE]
+
+    def voice_end(self, owner: web.WebSocketResponse | None = None) -> None:
+        if self._voice is None or (owner is not None and owner is not self._voice_owner):
+            return
+        voice, self._voice = self._voice, None
+        if self._voice_timeout:
+            self._voice_timeout.cancel()
+            self._voice_timeout = None
+        try:
+            if self._voice_buffer:
+                voice.send_chunk(bytes(self._voice_buffer))
+            voice.end()
+        except ConnectionClosed:
+            pass
+        self._voice_buffer.clear()
+        listener, self._voice_owner = self._voice_owner, None
+        if listener is not None and not listener.closed:
+            self._spawn(listener.send_json({"type": "voice", "listening": False}))
+
     def close(self) -> None:
+        self.voice_end()
         self._cancel_rediscover()
         if self._connector:
             self._connector.cancel()
@@ -321,35 +375,53 @@ async def websocket(request: web.Request) -> web.WebSocketResponse:
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
                 await handle_message(request.app, ws, msg.data)
+            elif msg.type == WSMsgType.BINARY:
+                session.voice_audio(ws, msg.data)
     finally:
+        session.voice_end(ws)
         session.clients.discard(ws)
     return ws
 
 
-def _sync(method: Callable[[TVSession, object], None], field: str):
-    async def handler(app: web.Application, message: dict[str, Any]) -> None:
-        method(app[SESSION], message.get(field))
-    return handler
+Handler = Callable[[TVSession, web.WebSocketResponse, dict[str, Any]], Awaitable[None]]
 
 
-async def _edit(app: web.Application, message: dict[str, Any]) -> None:
-    app[SESSION].edit(message)
+async def _key(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    session.send_key(message.get("key"))
 
 
-async def _pair_start(app: web.Application, _message: dict[str, Any]) -> None:
-    await app[SESSION].start_pairing()
+async def _edit(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    session.edit(message)
 
 
-async def _pair_code(app: web.Application, message: dict[str, Any]) -> None:
-    await app[SESSION].finish_pairing(message.get("code"))
+async def _app(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    session.launch(message.get("app"))
 
 
-HANDLERS: dict[str, Callable[[web.Application, dict[str, Any]], Awaitable[None]]] = {
-    "key": _sync(TVSession.send_key, "key"),
+async def _pair_start(session: TVSession, _ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    await session.start_pairing()
+
+
+async def _pair_code(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    await session.finish_pairing(message.get("code"))
+
+
+async def _voice_start(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    await session.voice_start(ws)
+
+
+async def _voice_end(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    session.voice_end(ws)
+
+
+HANDLERS: dict[str, Handler] = {
+    "key": _key,
     "edit": _edit,
-    "app": _sync(TVSession.launch, "app"),
+    "app": _app,
     "pair_start": _pair_start,
     "pair_code": _pair_code,
+    "voice_start": _voice_start,
+    "voice_end": _voice_end,
 }
 
 
@@ -361,7 +433,7 @@ async def handle_message(app: web.Application, ws: web.WebSocketResponse, data: 
         if handler is None:
             raise UserError(BAD_MESSAGE)
         kind = message["type"]
-        await handler(app, message)
+        await handler(app[SESSION], ws, message)
     except json.JSONDecodeError:
         await ws.send_json({"type": "error", "message": BAD_MESSAGE})
     except UserError as exc:

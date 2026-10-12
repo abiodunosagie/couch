@@ -52,6 +52,10 @@ private struct Envelope: Decodable {
     let message: String?
 }
 
+private struct VoiceMessage: Decodable {
+    let listening: Bool
+}
+
 /// WebSocket link to the helper. Publishes TV state and short messages for the user.
 @MainActor
 final class RemoteClient: ObservableObject {
@@ -64,6 +68,8 @@ final class RemoteClient: ObservableObject {
     @Published private(set) var state = TVState()
     @Published private(set) var linkUp = false
     @Published var toast: String?
+    /// True while the TV's voice search is taking audio from us.
+    @Published private(set) var listening = false
 
     /// Called when the link drops, before reconnecting. Lets the app restart the helper.
     var onLinkLost: (() async -> Void)?
@@ -72,6 +78,11 @@ final class RemoteClient: ObservableObject {
     private var task: URLSessionWebSocketTask?
     private var toastClear: Task<Void, Never>?
     private var retryDelay = RemoteClient.firstRetry
+    /// Microphone audio recorded before the TV starts listening.
+    private var heldAudio = Data()
+    private var voiceRequested = false
+    /// About 4 seconds of TV-format audio; anything older is dropped.
+    private static let maxHeldAudio = 64_000
 
     init(token: String) {
         self.token = token
@@ -112,8 +123,18 @@ final class RemoteClient: ObservableObject {
             guard let next = try? JSONDecoder().decode(TVState.self, from: data) else { return }
             if !next.notice.isEmpty && next.noticeId != state.noticeId { show(next.notice) }
             state = next
+        case "voice":
+            listening = (try? JSONDecoder().decode(VoiceMessage.self, from: data))?.listening ?? false
+            if listening {
+                if !heldAudio.isEmpty { task?.send(.data(heldAudio)) { _ in } }
+                heldAudio.removeAll()
+                // Released before the TV was ready: end the session now that it exists.
+                if !voiceRequested { send(["type": "voice_end"]) }
+            }
         case "error":
             if let text = envelope.message { show(text) }
+            voiceRequested = false
+            heldAudio.removeAll()
         default:
             break
         }
@@ -121,6 +142,9 @@ final class RemoteClient: ObservableObject {
 
     private func linkLost() async {
         linkUp = false
+        listening = false
+        voiceRequested = false
+        heldAudio.removeAll()
         state.status = .searching
         await onLinkLost?()
         try? await Task.sleep(nanoseconds: retryDelay)
@@ -158,6 +182,29 @@ final class RemoteClient: ObservableObject {
     func launch(_ app: String) {
         guard requireConnected() else { return }
         send(["type": "app", "app": app])
+    }
+
+    // MARK: voice
+
+    func startVoice() {
+        guard requireConnected() else { return }
+        voiceRequested = true
+        heldAudio.removeAll()
+        send(["type": "voice_start"])
+    }
+
+    func sendVoiceAudio(_ pcm: Data) {
+        guard voiceRequested || listening, let task else { return }
+        if listening {
+            task.send(.data(pcm)) { _ in }
+        } else if heldAudio.count < Self.maxHeldAudio {
+            heldAudio.append(pcm)
+        }
+    }
+
+    func endVoice() {
+        voiceRequested = false
+        if listening { send(["type": "voice_end"]) }
     }
 
     func startPairing() { send(["type": "pair_start"]) }

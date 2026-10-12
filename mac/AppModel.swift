@@ -7,6 +7,7 @@ import SwiftUI
 final class AppModel: ObservableObject {
     let helper = Helper()
     let client: RemoteClient
+    let voice: VoiceInput
 
     @Published var finish: Finish {
         didSet { UserDefaults.standard.set(finish.rawValue, forKey: "finish") }
@@ -32,6 +33,7 @@ final class AppModel: ObservableObject {
 
     init() {
         client = RemoteClient(token: helper.token)
+        voice = VoiceInput(client: client)
         finish = Finish(rawValue: UserDefaults.standard.string(forKey: "finish") ?? "") ?? .snow
         launchAtLogin = LoginItem.isEnabled
         client.onLinkLost = { [weak self] in

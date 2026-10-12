@@ -74,7 +74,7 @@ def remember_tv(name: str, host: str) -> None:
 async def make_remote(host: str) -> AndroidTVRemote:
     """Build a client for the TV, creating this Mac's certificate on first use."""
     ensure_config_dir()
-    remote = AndroidTVRemote(CLIENT_NAME, str(CERT_FILE), str(KEY_FILE), host)
+    remote = AndroidTVRemote(CLIENT_NAME, str(CERT_FILE), str(KEY_FILE), host, enable_voice=True)
     # The private key authenticates this Mac to the TV: create it owner-only from the first byte.
     previous_umask = os.umask(0o077)
     try:

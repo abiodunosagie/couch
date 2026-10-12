@@ -47,7 +47,7 @@ struct MenuPanelView: View {
                 if model.typing {
                     TypingPanel(model: model, compact: true)
                 }
-                RemoteView(client: client, finish: model.finish) { model.typing = true }
+                RemoteView(client: client, voice: model.voice, finish: model.finish)
                     .scaleEffect(model.panelScale)
                     .frame(width: RemoteView.size.width * model.panelScale,
                            height: RemoteView.size.height * model.panelScale)
