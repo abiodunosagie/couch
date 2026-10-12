@@ -157,6 +157,17 @@ def parse_recents(output: str, hidden: frozenset[str] = frozenset()) -> list[dic
     return recents
 
 
+def parse_task_ids(output: str, package: str) -> list[int]:
+    """Every recent task id of `package` in `dumpsys activity recents`, so Close can clear them all."""
+    ids: list[int] = []
+    for block in output.split("* Recent #")[1:]:
+        header = re.match(r"\d+: Task\{\w+ #(\d+) type=standard", block)
+        component = re.search(r"mActivityComponent=([A-Za-z0-9_.]+)/", block)
+        if header and component and component.group(1) == package:
+            ids.append(int(header.group(1)))
+    return ids
+
+
 def find_adb() -> str | None:
     for path in ADB_LOCATIONS:
         if Path(path).is_file():
@@ -430,9 +441,13 @@ class AppsManager:
         return parse_recents(output, hidden)
 
     async def close_app(self, package: object) -> None:
-        """Stop an app and free its memory. It stays installed; opening it starts it fresh."""
+        """Stop an app, free its memory and take it off the recent list. It stays installed."""
         name = check_package(package)
-        await self._shell(f"am force-stop {shlex.quote(name)}")
+        (_, output) = await self._shell(f"am force-stop {shlex.quote(name)}", "dumpsys activity recents")
+        # force-stop leaves the app's card in the TV's recents; removing its tasks clears it.
+        tasks = parse_task_ids(output, name)
+        if tasks:
+            await self._shell(*(f"am stack remove {task}" for task in tasks))
 
     async def open_settings(self) -> None:
         """The TV's main Settings in one step (the remote's Settings key does nothing on Google TV)."""

@@ -67,3 +67,13 @@ def test_recents_details():
     ]
     assert parse_recents((Path(__file__).parent / "recents_sample.txt").read_text(),
                          frozenset({"com.example.player"}))[-1]["package"] == "com.google.android.youtube.tv"
+
+
+def test_task_ids_for_close():
+    from pathlib import Path
+    from apps import parse_task_ids
+    sample = (Path(__file__).parent / "recents_sample.txt").read_text()
+    assert parse_task_ids(sample, "com.example.player") == [103, 104]
+    assert parse_task_ids(sample, "com.google.android.youtube.tv") == [101]
+    assert parse_task_ids(sample, "com.google.android.apps.tv.launcherx") == []  # home is never removed
+    assert parse_task_ids(sample, "com.missing.app") == []
