@@ -53,6 +53,17 @@ final class Favourites: ObservableObject {
         save()
     }
 
+    func move(from source: IndexSet, to destination: Int) {
+        pinned.move(fromOffsets: source, toOffset: destination)
+        save()
+    }
+
+    /// Forget an app Couch saw, for apps that were uninstalled.
+    func forget(_ package: String) {
+        seen.removeAll { $0 == package }
+        UserDefaults.standard.set(seen, forKey: Self.seenKey)
+    }
+
     /// Change a favourite's name and launch link. Returns false if the link is not a web link.
     @discardableResult
     func update(_ package: String, name: String, link: String) -> Bool {

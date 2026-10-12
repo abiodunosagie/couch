@@ -33,14 +33,21 @@ let toastTimer = 0;
 // ------------------------------------------------------------ pairing token
 
 function readToken() {
-  // The QR code carries the token after "#t=". Keep it, then take it out of the address bar.
-  const match = location.hash.match(/t=([A-Za-z0-9_-]+)/);
-  if (match) {
-    try { localStorage.setItem(TOKEN_KEY, match[1]); } catch { /* private mode: use it for this visit */ }
-    history.replaceState(null, "", location.pathname);
-    return match[1];
+  // The QR code puts the token in the address as ?t=. It stays there, because Home Screen apps
+  // and the camera's link viewer keep separate storage; storage is only a backup.
+  const fromAddress = new URLSearchParams(location.search).get("t")
+    || (location.hash.match(/t=([A-Za-z0-9_-]+)/) || [])[1];
+  let stored = null;
+  try { stored = localStorage.getItem(TOKEN_KEY); } catch { /* storage blocked */ }
+  const token = fromAddress || stored;
+  if (!token) return null;
+  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* fine, the address has it */ }
+  if (new URLSearchParams(location.search).get("t") !== token) {
+    history.replaceState(null, "", `/?t=${encodeURIComponent(token)}`);
   }
-  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+  // Add to Home Screen reads the manifest; its start address must carry the token too.
+  document.querySelector('link[rel="manifest"]').href = `/manifest.webmanifest?t=${encodeURIComponent(token)}`;
+  return token;
 }
 const token = readToken();
 

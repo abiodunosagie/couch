@@ -22,6 +22,7 @@ from aiohttp import WSMsgType, web
 from androidtvremote2 import AndroidTVRemote, CannotConnect, ConnectionClosed, InvalidAuth, VoiceStream
 from androidtvremote2.remote import VOICE_CHUNK_MIN_SIZE
 
+from apps import AppsError, AppsManager
 from phone import PhoneAccess
 from text_input import EDIT_KEYS, NAVIGATION_KEYS, FieldTrackingProtocol
 from tv import check_pairing_code, find_tv, make_remote
@@ -86,6 +87,7 @@ class TVSession:
         self._voice_buffer = bytearray()
         self._voice_timeout: asyncio.TimerHandle | None = None
         self.phone: PhoneAccess  # set by serve()
+        self.apps = AppsManager()
 
     # ------------------------------------------------------------ state
 
@@ -476,6 +478,52 @@ async def _phone_reset(session: TVSession, ws: web.WebSocketResponse, _message: 
     await ws.send_json(session.phone.info())
 
 
+def _apps_message(session: TVSession, installed: list[str] | None = None) -> dict[str, Any]:
+    message: dict[str, Any] = {"type": "apps", "status": session.apps.status}
+    if installed is not None:
+        message["installed"] = installed
+    return message
+
+
+async def _apps_connect(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    remote = session._require_connected()
+
+    def report() -> None:
+        session._spawn(ws.send_json(_apps_message(session)))
+
+    async def connect_and_list() -> None:
+        await session.apps.connect(remote.host, report)
+        if session.apps.status == "ready":
+            await _apps_list(session, ws, {})
+
+    # The TV may wait a minute for the user to allow this Mac; keep the socket free meanwhile.
+    session._spawn(connect_and_list())
+
+
+async def _apps_list(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    try:
+        installed = await session.apps.installed()
+    except AppsError as exc:
+        raise UserError(str(exc)) from None
+    await ws.send_json(_apps_message(session, installed))
+
+
+async def _apps_launch(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    session._require_connected()
+    try:
+        await session.apps.launch(message.get("package"))
+    except AppsError as exc:
+        raise UserError(str(exc)) from None
+
+
+async def _apps_uninstall(session: TVSession, ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    try:
+        await session.apps.uninstall(message.get("package"))
+    except AppsError as exc:
+        raise UserError(str(exc)) from None
+    await _apps_list(session, ws, {})
+
+
 HANDLERS: dict[str, Handler] = {
     "key": _key,
     "edit": _edit,
@@ -489,6 +537,11 @@ HANDLERS: dict[str, Handler] = {
     "phone_get": _phone_get,
     "phone_set": _phone_set,
     "phone_reset": _phone_reset,
+    # Installed apps over ADB: the Mac app only, never phones.
+    "apps_connect": _apps_connect,
+    "apps_list": _apps_list,
+    "apps_launch": _apps_launch,
+    "apps_uninstall": _apps_uninstall,
 }
 
 # Phones get the remote and typing; pairing, voice and phone settings stay on the Mac.
@@ -562,5 +615,6 @@ async def serve(port: int, host: str | None, name: str | None, parent_pid: int |
         if watchdog:
             watchdog.cancel()
         session.close()
+        await session.apps.close()
         await session.phone.stop()
         await runner.cleanup()

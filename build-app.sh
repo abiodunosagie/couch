@@ -16,6 +16,13 @@ APP="$HOME/Applications/Couch.app"
 BUILD="$PROJECT/build"
 mkdir -p "$BUILD"
 
+# The app runs the helper from this folder; make sure it can start before installing.
+echo "Checking the helper..."
+(cd "$PROJECT" && "$UV" sync --quiet && "$UV" run --quiet python -c "import server") || {
+  echo "The helper does not start. Fix the error above first." >&2
+  exit 1
+}
+
 echo "Compiling..."
 xcrun swiftc -O -parse-as-library -target arm64-apple-macos15.0 \
   -o "$BUILD/Couch" "$PROJECT"/mac/*.swift \

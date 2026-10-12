@@ -14,7 +14,12 @@ final class LinkDropView: NSView {
     required init?(coder: NSCoder) { nil }
 
     override func mouseDown(with event: NSEvent) {
-        onClick?()
+        // Command drag rearranges menu bar icons; leave that to the icon underneath.
+        if event.modifierFlags.contains(.command) {
+            superview?.mouseDown(with: event)
+        } else {
+            onClick?()
+        }
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {

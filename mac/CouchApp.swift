@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var shortcuts: GlobalShortcuts?
     private let volumeHUD = VolumeHUD()
     private var stateWatch: AnyCancellable?
+    private var appsWatch: AnyCancellable?
     private var window: NSWindow?
     private var keyRouter: KeyRouter?
     private var trackpad: TrackpadRouter?
@@ -52,6 +53,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(showWindow), name: Self.showWindowNotification, object: nil)
 
+        if arguments.contains("--show-apps") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.model.showingApps = true }
+        }
         if arguments.contains("--show-panel") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.togglePanel() }
         } else if !arguments.contains(LoginItem.backgroundArgument) {
@@ -112,6 +116,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate()
     }
 
+    /// The Apps manager as a real sheet on the window.
+    private func showAppsSheet() {
+        showWindow()
+        guard let window, window.attachedSheet == nil else { return }
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 600),
+                             styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        sheet.contentView = NSHostingView(rootView: AppsManagerView(model: model) { [weak self, weak sheet] in
+            guard let self, let sheet else { return }
+            self.window?.endSheet(sheet)
+        })
+        window.beginSheet(sheet) { [weak self] _ in
+            MainActor.assumeIsolated { self?.model.showingApps = false }
+        }
+    }
+
     func windowWillClose(_ notification: Notification) {
         Repeater.stopAll()
         // Back to a menu bar only app once the window is gone.
@@ -151,6 +170,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 MainActor.assumeIsolated { self?.updateStatusIcon(state, linkUp: linkUp) }
             }
         updateStatusIcon(model.client.state, linkUp: false)
+        // Manage (in the window or the menu bar panel) opens the Apps sheet on the window.
+        appsWatch = model.$showingApps.sink { [weak self] showing in
+            guard showing else { return }
+            DispatchQueue.main.async { self?.showAppsSheet() }
+        }
     }
 
     private func updateStatusIcon(_ state: TVState, linkUp: Bool) {

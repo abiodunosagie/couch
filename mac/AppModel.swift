@@ -26,6 +26,8 @@ final class AppModel: ObservableObject {
             }
         }
     }
+    /// Shows the Apps manager sheet in the window.
+    @Published var showingApps = false
     /// While on, the Mac keyboard types into the TV text box instead of pressing remote buttons.
     @Published var typing = false {
         didSet {
@@ -69,6 +71,17 @@ final class AppModel: ObservableObject {
     func start() async {
         startFailed = !(await helper.ensureRunning())
         client.connect()
+    }
+
+    /// Open a pinned app: by package through the TV's app manager when it is on, else by its web link.
+    func openApp(_ app: FavouriteApp) {
+        if client.appsLink == .ready {
+            client.launchApp(app.package)
+        } else if let link = app.link {
+            client.open(link)
+        } else {
+            client.show("Turn on the app manager in Apps, or add a link for \(app.name).")
+        }
     }
 
     /// Send a web link to the TV: YouTube links play in the YouTube app, others open in the TV browser.

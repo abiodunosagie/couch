@@ -62,7 +62,7 @@ struct MenuPanelView: View {
             if client.state.needsPairing {
                 PairingForm(client: client)
             } else {
-                AppsRow(favourites: model.favourites, client: client, compact: true)
+                AppsRow(model: model, compact: true)
                 if model.typing {
                     TypingPanel(model: model, compact: true)
                 } else if model.searching {

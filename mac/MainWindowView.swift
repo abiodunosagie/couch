@@ -49,7 +49,7 @@ struct MainWindowView: View {
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Apps").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
-                        AppsRow(favourites: model.favourites, client: client)
+                        AppsRow(model: model)
                     }
                     if model.typing {
                         TypingPanel(model: model)

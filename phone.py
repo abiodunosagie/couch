@@ -100,7 +100,9 @@ class PhoneAccess:
     def info(self) -> dict[str, Any]:
         """For the Mac app only: never sent to phones, since it holds the token."""
         address = self._current_address()
-        url = f"http://{address}:{PHONE_PORT}/#t={self.token}" if self.enabled and address and self.token else None
+        # The token stays in the address (not just in browser storage): iPhone Home Screen apps and
+        # the camera's link viewer keep their own storage, so the address is what survives.
+        url = f"http://{address}:{PHONE_PORT}/?t={self.token}" if self.enabled and address and self.token else None
         return {"type": "phone", "enabled": self.enabled, "running": self._runner is not None, "url": url}
 
     async def start(self) -> None:
@@ -110,7 +112,7 @@ class PhoneAccess:
         app.router.add_get("/", self._page("index.html", "text/html"))
         app.router.add_get("/app.js", self._page("app.js", "text/javascript"))
         app.router.add_get("/style.css", self._page("style.css", "text/css"))
-        app.router.add_get("/manifest.webmanifest", self._page("manifest.webmanifest", "application/manifest+json"))
+        app.router.add_get("/manifest.webmanifest", self._manifest)
         app.router.add_get("/icon.png", self._page("icon.png", "image/png"))
         app.router.add_get("/ws", self._socket)
         runner = web.AppRunner(app, access_log=None)
@@ -172,8 +174,22 @@ class PhoneAccess:
 
         return handler
 
-    async def _socket(self, request: web.Request) -> web.WebSocketResponse:
+    def _token_ok(self, offered: str) -> bool:
+        return bool(self.token) and hmac.compare_digest(offered, self.token or "")
+
+    async def _manifest(self, request: web.Request) -> web.Response:
+        """The Home Screen app starts at the manifest's start_url, so that has to carry the token."""
         offered = request.query.get("t", "")
-        if not self.token or not hmac.compare_digest(offered, self.token):
+        start = f"/?t={offered}" if self._token_ok(offered) else "/"
+        manifest = {
+            "name": "Couch", "short_name": "Couch", "description": "TV remote for your Google TV",
+            "start_url": start, "scope": "/", "display": "standalone", "orientation": "portrait",
+            "background_color": "#efebe5", "theme_color": "#efebe5",
+            "icons": [{"src": "/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any"}],
+        }
+        return web.json_response(manifest, content_type="application/manifest+json")
+
+    async def _socket(self, request: web.Request) -> web.WebSocketResponse:
+        if not self._token_ok(request.query.get("t", "")):
             raise web.HTTPForbidden()
         return await self._run_socket(request)

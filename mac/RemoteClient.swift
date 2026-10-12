@@ -60,6 +60,16 @@ private struct VoiceMessage: Decodable {
     let listening: Bool
 }
 
+/// The TV's app manager (Android debugging) as the helper reports it.
+enum AppsLink: String, Decodable {
+    case unknown, off, waiting, ready, denied
+}
+
+private struct AppsMessage: Decodable {
+    let status: AppsLink
+    let installed: [String]?
+}
+
 /// Phone remote settings from the helper. The URL carries the pairing token: Mac app only.
 struct PhoneInfo: Decodable, Equatable {
     var enabled: Bool
@@ -84,6 +94,9 @@ final class RemoteClient: ObservableObject {
     /// True while the TV's voice search is taking audio from us.
     @Published private(set) var listening = false
     @Published private(set) var phone: PhoneInfo?
+    @Published private(set) var appsLink: AppsLink = .unknown
+    /// Apps the user installed on the TV, by package, once the app manager is ready.
+    @Published private(set) var installedApps: [String] = []
 
     /// Called when the link drops, before reconnecting. Lets the app restart the helper.
     var onLinkLost: (() async -> Void)?
@@ -139,6 +152,11 @@ final class RemoteClient: ObservableObject {
             guard let next = try? JSONDecoder().decode(TVState.self, from: data) else { return }
             if !next.notice.isEmpty && next.noticeId != state.noticeId { show(next.notice) }
             state = next
+        case "apps":
+            if let message = try? JSONDecoder().decode(AppsMessage.self, from: data) {
+                appsLink = message.status
+                if let installed = message.installed { installedApps = installed }
+            }
         case "phone":
             phone = try? JSONDecoder().decode(PhoneInfo.self, from: data)
         case "voice":
@@ -258,6 +276,16 @@ final class RemoteClient: ObservableObject {
         guard !query.isEmpty, requireConnected() else { return }
         send(["type": "search", "query": query])
     }
+
+    // MARK: installed apps (ADB)
+
+    func connectApps() { send(["type": "apps_connect"]) }
+    func refreshApps() { send(["type": "apps_list"]) }
+    func launchApp(_ package: String) {
+        guard requireConnected() else { return }
+        send(["type": "apps_launch", "package": package])
+    }
+    func uninstallApp(_ package: String) { send(["type": "apps_uninstall", "package": package]) }
 
     // MARK: phone remote
 

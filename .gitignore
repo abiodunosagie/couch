@@ -16,3 +16,5 @@ wheels/
 config.json
 build/
 .envrc
+adbkey
+adbkey.pub
