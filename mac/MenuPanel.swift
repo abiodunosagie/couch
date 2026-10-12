@@ -19,8 +19,10 @@ final class MenuPanel: NSObject, NSWindowDelegate {
 
     /// Room taken by the header, toast and padding around the remote, in points.
     private static let chromeHeight: CGFloat = 150
-    /// Extra room the typing panel takes while typing mode is on.
+    /// Extra room the typing panel takes while typing mode is on (search takes less; this covers both).
     private static let typingHeight: CGFloat = 170
+    /// The pinned apps row.
+    private static let appsHeight: CGFloat = 40
     private static let maxScale: CGFloat = 0.8
     private static let minScale: CGFloat = 0.5
     private static let gap: CGFloat = 6
@@ -87,7 +89,7 @@ final class MenuPanel: NSObject, NSWindowDelegate {
     private func place() {
         guard let area = (screen ?? NSScreen.main)?.visibleFrame else { return }
         // Shrink the remote while the typing panel is open so everything still fits.
-        let chrome = Self.chromeHeight + (model.typing ? Self.typingHeight : 0)
+        let chrome = Self.chromeHeight + Self.appsHeight + (model.typing || model.searching ? Self.typingHeight : 0)
         let fit = (area.height - chrome - Self.gap * 2) / RemoteView.size.height
         let scale = max(Self.minScale, min(Self.maxScale, fit))
         if abs(scale - model.panelScale) > 0.001 { model.panelScale = scale }
@@ -105,6 +107,7 @@ final class MenuPanel: NSObject, NSWindowDelegate {
         Repeater.stopAll()
         panel.orderOut(nil)
         model.typing = false
+        model.searching = false
         lastClosed = Date()
     }
 

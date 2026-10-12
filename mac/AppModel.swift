@@ -8,6 +8,7 @@ final class AppModel: ObservableObject {
     let helper = Helper()
     let client: RemoteClient
     let voice: VoiceInput
+    let favourites: Favourites
 
     @Published var finish: Finish {
         didSet { UserDefaults.standard.set(finish.rawValue, forKey: "finish") }
@@ -25,7 +26,14 @@ final class AppModel: ObservableObject {
     }
     /// While on, the Mac keyboard types into the TV text box instead of pressing remote buttons.
     @Published var typing = false {
-        didSet { if !typing { hideFieldText = false } }
+        didSet {
+            if !typing { hideFieldText = false }
+            if typing { searching = false }
+        }
+    }
+    /// Shows the YouTube search field.
+    @Published var searching = false {
+        didSet { if searching { typing = false } }
     }
     /// Size of the remote in the menu bar panel, chosen so the panel fits the screen.
     @Published var panelScale: CGFloat = 0.74
@@ -38,6 +46,7 @@ final class AppModel: ObservableObject {
     init() {
         client = RemoteClient(token: helper.token)
         voice = VoiceInput(client: client)
+        favourites = Favourites(client: client)
         finish = Finish(rawValue: UserDefaults.standard.string(forKey: "finish") ?? "") ?? .snow
         launchAtLogin = LoginItem.isEnabled
         client.onLinkLost = { [weak self] in
@@ -53,6 +62,27 @@ final class AppModel: ObservableObject {
     func start() async {
         startFailed = !(await helper.ensureRunning())
         client.connect()
+    }
+
+    /// Send a web link to the TV: YouTube links play in the YouTube app, others open in the TV browser.
+    func sendLink(_ url: URL) {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            client.show("Only web links can go to the TV.")
+            return
+        }
+        client.open(url.absoluteString)
+        client.show("Sent to the TV.")
+    }
+
+    /// Send the link on the Mac clipboard, if there is one.
+    func sendClipboardLink() {
+        let board = NSPasteboard.general
+        let text = board.string(forType: .URL) ?? board.string(forType: .string) ?? ""
+        guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)), url.host != nil else {
+            client.show("The clipboard has no web link.")
+            return
+        }
+        sendLink(url)
     }
 
     /// Hides the mirrored TV text, for passwords. Turns on by itself after pasting one.

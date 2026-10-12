@@ -14,6 +14,7 @@ import hmac
 import json
 import logging
 import os
+from urllib.parse import quote_plus, urlparse
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -46,6 +47,10 @@ APP_LINKS = {
     "youtube": "https://www.youtube.com",
     "netflix": "https://www.netflix.com/title",
 }
+
+MAX_LINK_LENGTH = 2000
+MAX_SEARCH_LENGTH = 200
+YOUTUBE_SEARCH = "https://www.youtube.com/results?search_query="
 
 log = logging.getLogger("tvremote.server")
 
@@ -284,6 +289,24 @@ class TVSession:
             raise UserError("Unknown app.")
         self._require_connected().send_launch_app_command(link)
 
+    def open(self, link: object) -> None:
+        """Open a web link on the TV. Apps that claim the link (youtube.com, netflix.com) open it.
+
+        The TV refuses package launches (market://launch?id=, android-app:// and intent: links all
+        come back as errors, tested 2026-10-12), so web links are the only way to start an app.
+        """
+        if not isinstance(link, str) or not link or len(link) > MAX_LINK_LENGTH:
+            raise UserError("That link is too long or empty.")
+        parts = urlparse(link)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise UserError("Couch can open web links only.")
+        self._require_connected().send_launch_app_command(link)
+
+    def search_youtube(self, query: object) -> None:
+        if not isinstance(query, str) or not query.strip() or len(query) > MAX_SEARCH_LENGTH:
+            raise UserError(f"Search for 1 to {MAX_SEARCH_LENGTH} characters.")
+        self._require_connected().send_launch_app_command(YOUTUBE_SEARCH + quote_plus(query.strip()))
+
     # ------------------------------------------------------------ voice
 
     async def voice_start(self, owner: web.WebSocketResponse) -> None:
@@ -407,6 +430,14 @@ async def _app(session: TVSession, _ws: web.WebSocketResponse, message: dict[str
     session.launch(message.get("app"))
 
 
+async def _open(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    session.open(message.get("link"))
+
+
+async def _search(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    session.search_youtube(message.get("query"))
+
+
 async def _pair_start(session: TVSession, _ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
     await session.start_pairing()
 
@@ -427,6 +458,8 @@ HANDLERS: dict[str, Handler] = {
     "key": _key,
     "edit": _edit,
     "app": _app,
+    "open": _open,
+    "search": _search,
     "pair_start": _pair_start,
     "pair_code": _pair_code,
     "voice_start": _voice_start,

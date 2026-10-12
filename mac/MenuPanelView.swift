@@ -23,11 +23,15 @@ struct MenuPanelView: View {
                     Text(friendlyApp(client.state.app)).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button { model.searching.toggle() } label: { Image(systemName: "magnifyingglass") }
+                    .buttonStyle(.borderless)
+                    .help("Search YouTube on the TV (Command F)")
                 Button { model.typing.toggle() } label: { Image(systemName: "keyboard") }
                     .buttonStyle(.borderless)
                     .help("Type on the TV (/)")
                 Menu {
                     Button("Open Couch Window", action: openWindow)
+                    Button("Send Clipboard Link to TV") { model.sendClipboardLink() }
                     Picker("Finish", selection: $model.finish) {
                         ForEach(Finish.allCases) { Text($0.label).tag($0) }
                     }
@@ -44,8 +48,11 @@ struct MenuPanelView: View {
             if client.state.needsPairing {
                 PairingForm(client: client)
             } else {
+                AppsRow(favourites: model.favourites, client: client, compact: true)
                 if model.typing {
                     TypingPanel(model: model, compact: true)
+                } else if model.searching {
+                    SearchBar(client: client, focusOnAppear: true) { model.searching = false }
                 }
                 RemoteView(client: client, voice: model.voice, finish: model.finish)
                     .scaleEffect(model.panelScale)

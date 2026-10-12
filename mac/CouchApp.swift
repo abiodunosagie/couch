@@ -70,6 +70,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return true
     }
 
+    /// couch:// links, for Shortcuts, scripts and bookmarks:
+    /// couch://link?url=https://...  couch://app?name=Netflix  couch://key?name=MEDIA_PLAY_PAUSE
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme == "couch" {
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let value = { (name: String) in query.first { $0.name == name }?.value }
+            switch url.host {
+            case "link": if let link = value("url").flatMap(URL.init(string:)) { model.sendLink(link) }
+            case "app":
+                let pinned = model.favourites.pinned.first { $0.package == value("package") || $0.name == value("name") }
+                if let link = pinned?.link { model.client.open(link) } else { model.client.show("No link for that app yet.") }
+            case "key": if let key = value("name").flatMap(RemoteKey.init(rawValue:)) { model.client.press(key) }
+            default: model.client.show("Couch did not understand that link.")
+            }
+        }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -124,6 +141,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         item.autosaveName = "CouchStatusItem"
         statusItem = item
+        if let button = item.button {
+            // Drop a link from a browser on the icon to play it on the TV.
+            let drop = LinkDropView(frame: button.bounds)
+            drop.autoresizingMask = [.width, .height]
+            drop.onLink = { [weak self] url in self?.model.sendLink(url) }
+            button.addSubview(drop)
+        }
 
         menuPanel = MenuPanel(model: model, openWindow: { [weak self] in self?.showWindow() },
                               quit: { NSApp.terminate(nil) })

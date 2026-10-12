@@ -128,6 +128,13 @@ async def cmd_text(args: argparse.Namespace) -> None:
         await asyncio.sleep(SETTLE_SECONDS)
 
 
+async def cmd_open(args: argparse.Namespace) -> None:
+    async with cli_connected(args) as remote:
+        remote.send_launch_app_command(args.target)
+        await asyncio.sleep(SETTLE_SECONDS * 4)
+        print(describe(remote))
+
+
 async def cmd_status(args: argparse.Namespace) -> None:
     async with cli_connected(args) as remote:
         await asyncio.sleep(SETTLE_SECONDS)
@@ -157,6 +164,8 @@ def main() -> None:
     text = sub.add_parser("text", help="type text into the focused field")
     text.add_argument("text")
     sub.add_parser("status", help="show power, app and volume")
+    open_parser = sub.add_parser("open", help="open an app (package name) or a link on the TV")
+    open_parser.add_argument("target")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -172,6 +181,7 @@ def main() -> None:
         "key": cmd_key,
         "text": cmd_text,
         "status": cmd_status,
+        "open": cmd_open,
     }[args.command]
     try:
         asyncio.run(command(args))

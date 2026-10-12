@@ -40,6 +40,15 @@ final class KeyRouter {
         // Typing into a real text field (the pairing code; its field editor is an NSTextView) is left to AppKit.
         if keyWindow.firstResponder is NSTextView { return false }
         if model.typing { return handleTyping(event) }
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "f" {
+            model.searching = true
+            return true
+        }
+        if modifiers == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "v" {
+            model.sendClipboardLink()
+            return true
+        }
         guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return false }
 
         if event.keyCode == UInt16(kVK_Escape) {

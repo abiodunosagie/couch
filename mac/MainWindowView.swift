@@ -27,11 +27,25 @@ struct MainWindowView: View {
 
                 if client.state.needsPairing {
                     PairingForm(client: client)
-                } else if model.typing {
-                    TypingPanel(model: model)
                 } else {
-                    Button { model.typing = true } label: { Label("Type on the TV", systemImage: "keyboard") }
-                        .help("Type with your keyboard (/)")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Apps").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                        AppsRow(favourites: model.favourites, client: client)
+                    }
+                    if model.typing {
+                        TypingPanel(model: model)
+                    } else if model.searching {
+                        SearchBar(client: client, focusOnAppear: true) { model.searching = false }
+                    } else {
+                        HStack(spacing: 8) {
+                            Button { model.typing = true } label: { Label("Type", systemImage: "keyboard") }
+                                .help("Type into the TV with your keyboard (/)")
+                            Button { model.searching = true } label: { Label("Search YouTube", systemImage: "magnifyingglass") }
+                                .help("Search YouTube on the TV (Command F)")
+                            Button { model.sendClipboardLink() } label: { Label("Send link", systemImage: "link") }
+                                .help("Play the link on your clipboard on the TV. You can also drop a link on this window.")
+                        }
+                    }
                 }
 
                 Text(client.toast ?? " ")
@@ -55,10 +69,16 @@ struct MainWindowView: View {
                 }
                 .font(.callout)
             }
-            .frame(width: 340, alignment: .leading)
+            .frame(width: 360, alignment: .leading)
         }
         .padding(.horizontal, 48)
-        .frame(minWidth: 760, minHeight: 720)
+        // Drop a link from a browser to play it on the TV.
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first else { return false }
+            model.sendLink(url)
+            return true
+        }
+        .frame(minWidth: 780, minHeight: 760)
     }
 }
 
@@ -66,7 +86,7 @@ private struct Shortcuts: View {
     private let items = [
         ("arrows", "move"), ("return", "select"), ("esc", "back"),
         ("h", "home"), ("space", "play / pause"), ("+ -", "volume"),
-        ("m", "mute"), ("p", "power"), ("/", "type text"),
+        ("m", "mute"), ("p", "power"), ("/", "type text"), ("⌘F", "search"), ("⌘⇧V", "send link"), ("", ""),
     ]
     private let columns = 3
     private static let global = [

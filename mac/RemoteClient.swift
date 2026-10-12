@@ -236,6 +236,18 @@ final class RemoteClient: ObservableObject {
         if listening { send(["type": "voice_end"]) }
     }
 
+    /// Open a web link on the TV; apps that own the link (YouTube, Netflix) open it.
+    func open(_ link: String) {
+        guard requireConnected() else { return }
+        send(["type": "open", "link": link])
+    }
+
+    func searchYouTube(_ query: String) {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, requireConnected() else { return }
+        send(["type": "search", "query": query])
+    }
+
     func startPairing() { send(["type": "pair_start"]) }
 
     func submitPairing(_ code: String) { send(["type": "pair_code", "code": code]) }

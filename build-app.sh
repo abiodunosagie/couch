@@ -53,6 +53,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
   <key>NSHumanReadableCopyright</key><string>Remote for Google TV</string>
+  <key>CFBundleURLTypes</key><array><dict>
+    <key>CFBundleURLName</key><string>com.abiodun.couch</string>
+    <key>CFBundleURLSchemes</key><array><string>couch</string></array>
+  </dict></array>
   <key>NSMicrophoneUsageDescription</key><string>Couch sends your voice to the TV when you hold the voice button.</string>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
