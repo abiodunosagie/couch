@@ -1,30 +1,32 @@
 import Foundation
 
-/// What Couch knows about common TV apps and screens, by Android package name.
+/// Common TV apps and screens by Android package name, from known_apps.json (shared with the
+/// helper and the phone page, so all three name apps the same way).
 enum KnownApps {
-    struct Entry {
+    struct Entry: Decodable {
         let name: String
-        /// A web link the app owns, which opens it on Google TV. The TV refuses package launches.
+        /// A web link the app owns, which opens it when the TV's app manager is off.
         var link: String?
         /// A system screen (home, settings, screensaver), not something to pin.
-        var isScreen = false
+        var screen: Bool?
+        var isScreen: Bool { screen == true }
     }
 
-    static let all: [String: Entry] = [
-        "com.google.android.youtube.tv": Entry(name: "YouTube", link: "https://www.youtube.com"),
-        "com.google.android.youtube.tvkids": Entry(name: "YouTube Kids", link: "https://www.youtubekids.com"),
-        "com.netflix.ninja": Entry(name: "Netflix", link: "https://www.netflix.com/title"),
-        "com.amazon.amazonvideo.livingroom": Entry(name: "Prime Video", link: "https://app.primevideo.com"),
-        "com.disney.disneyplus": Entry(name: "Disney+", link: "https://www.disneyplus.com"),
-        "com.apple.atve.androidtv.appletv": Entry(name: "Apple TV", link: "https://tv.apple.com"),
-        "com.spotify.tv.android": Entry(name: "Spotify", link: "https://open.spotify.com"),
-        "com.wbd.stream": Entry(name: "Max", link: "https://play.max.com"),
-        "com.google.android.apps.tv.launcherx": Entry(name: "Home screen", isScreen: true),
-        "com.google.android.tvlauncher": Entry(name: "Home screen", isScreen: true),
-        "com.android.tv.settings": Entry(name: "Settings", isScreen: true),
-        "com.google.android.katniss": Entry(name: "Voice search", isScreen: true),
-        "com.neilturner.aerialviews": Entry(name: "Screensaver", isScreen: true),
-    ]
+    static let youtube = "com.google.android.youtube.tv"
+    static let netflix = "com.netflix.ninja"
+
+    static let all: [String: Entry] = {
+        guard let url = Bundle.main.url(forResource: "known_apps", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let table = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        var entries: [String: Entry] = [:]
+        for (package, value) in table where !package.hasPrefix("_") {
+            guard let json = try? JSONSerialization.data(withJSONObject: value),
+                  let entry = try? JSONDecoder().decode(Entry.self, from: json) else { continue }
+            entries[package] = entry
+        }
+        return entries
+    }()
 
     /// Known apps with a launch link, for the "Popular apps" menu.
     static var launchable: [String] { all.filter { $0.value.link != nil }.keys.sorted() }

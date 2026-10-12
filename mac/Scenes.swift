@@ -50,7 +50,7 @@ final class Scenes: ObservableObject {
             scenes = saved
         } else {
             scenes = [
-                TVScene(name: "Movie night", steps: [.turnOn, .wait(seconds: 4), .openApp(package: "com.netflix.ninja")]),
+                TVScene(name: "Movie night", steps: [.turnOn, .wait(seconds: 4), .openApp(package: KnownApps.netflix)]),
                 TVScene(name: "Good night", steps: [.press(.pause), .wait(seconds: 1), .turnOff]),
             ]
         }

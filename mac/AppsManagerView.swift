@@ -29,7 +29,19 @@ struct AppsManagerView: View {
                 Button("Done", action: close).keyboardShortcut(.defaultAction)
             }
             .padding([.horizontal, .top], 20)
-            .padding(.bottom, 12)
+            .padding(.bottom, 10)
+
+            if client.appsLink == .ready {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Find an app", text: $search).textFieldStyle(.plain)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(nsColor: .textBackgroundColor)))
+                .padding(.horizontal, 20)
+                .padding(.bottom, 10)
+            }
 
             List {
                 Section("Pinned") {
@@ -65,23 +77,26 @@ struct AppsManagerView: View {
                 }
             }
             .listStyle(.inset(alternatesRowBackgrounds: true))
-            .searchable(text: $search, placement: .toolbar, prompt: "Find an app")
         }
-        .frame(width: 520, height: 600)
-        .onAppear { if client.appsLink != .ready { client.connectApps() } else { client.refreshApps() } }
-        .confirmationDialog(uninstallTitle, isPresented: Binding(get: { uninstalling != nil }, set: { if !$0 { uninstalling = nil } })) {
+        .frame(width: Self.size.width, height: Self.size.height)
+        .onExitCommand(perform: close)
+        .onAppear {
+            switch client.appsLink {
+            case .ready: client.refreshApps()
+            // Never re-prompt on the TV by itself after a refusal or while a prompt is up.
+            case .denied, .waiting: break
+            case .off, .unknown: client.connectApps()
+            }
+        }
+        .confirmationDialog(uninstallTitle, isPresented: isPresent($uninstalling)) {
             Button("Uninstall", role: .destructive) {
-                if let package = uninstalling {
-                    client.uninstallApp(package)
-                    favourites.unpin(package)
-                    favourites.forget(package)
-                }
+                if let package = uninstalling { model.uninstall(package) }
                 uninstalling = nil
             }
         } message: {
             Text("The app and its data are removed from the TV. You can install it again from the Play Store on the TV.")
         }
-        .alert("Edit app", isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
+        .alert("Edit app", isPresented: isPresent($editing)) {
             TextField("Name", text: $newName)
             TextField("Web link (used when the app manager is off)", text: $newLink)
             Button("Save") {
@@ -98,11 +113,20 @@ struct AppsManagerView: View {
         "Uninstall \(uninstalling.map(friendlyApp) ?? "this app") from the TV?"
     }
 
+    static let size = CGSize(width: 520, height: 620)
+
     private var filteredInstalled: [String] {
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
-        let sorted = client.installedApps.sorted { friendlyApp($0).localizedCaseInsensitiveCompare(friendlyApp($1)) == .orderedAscending }
-        guard !query.isEmpty else { return sorted }
-        return sorted.filter { friendlyApp($0).lowercased().contains(query) || $0.lowercased().contains(query) }
+        let named = client.installedApps.map { (package: $0, name: friendlyApp($0)) }
+        return named
+            .filter { query.isEmpty || $0.name.lowercased().contains(query) || $0.package.lowercased().contains(query) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .map(\.package)
+    }
+
+    /// A Bool binding that is true while an optional is set, for alerts and dialogs.
+    private func isPresent<T>(_ value: Binding<T?>) -> Binding<Bool> {
+        Binding(get: { value.wrappedValue != nil }, set: { if !$0 { value.wrappedValue = nil } })
     }
 
     // MARK: rows
@@ -167,16 +191,7 @@ struct AppsManagerView: View {
                 Button("Try Again") { client.connectApps() }
             }
         case .off, .unknown:
-            VStack(alignment: .leading, spacing: 8) {
-                Text("To see and remove every app on your TV, turn on Android debugging once:")
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("1. Settings › System › About: press “Android TV OS build” 7 times.")
-                Text("2. Settings › System › Developer options: turn on USB debugging.")
-                Text("3. Come back here and choose Connect. Allow Couch on the TV.")
-                Button("Connect") { client.connectApps() }
-                    .padding(.top, 2)
-            }
-            .font(.callout)
+            DebuggingSteps { client.connectApps() }
         }
     }
 
@@ -184,5 +199,27 @@ struct AppsManagerView: View {
         newName = app.name
         newLink = app.link ?? ""
         editing = app
+    }
+}
+
+/// The one time TV setup that lets Couch see and remove apps.
+private struct DebuggingSteps: View {
+    let connect: () -> Void
+    private static let steps = [
+        "Settings › System › About: press “Android TV OS build” 7 times.",
+        "Settings › System › Developer options: turn on USB debugging.",
+        "Come back here and choose Connect. On the TV, tick “Always allow from this computer” and choose Allow.",
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("To see, open and remove every app on your TV, turn on Android debugging once:")
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(Array(Self.steps.enumerated()), id: \.offset) { index, step in
+                Text("\(index + 1). \(step)").fixedSize(horizontal: false, vertical: true)
+            }
+            Button("Connect", action: connect).padding(.top, 2)
+        }
+        .font(.callout)
     }
 }

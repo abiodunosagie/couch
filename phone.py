@@ -80,7 +80,8 @@ class PhoneAccess:
     # ------------------------------------------------------------ control
 
     async def set_enabled(self, enabled: bool) -> None:
-        if enabled and not self.token:
+        if enabled and not self.enabled:
+            # A fresh code every time it is turned on, so turning it off really locks old phones out.
             self.token = secrets.token_urlsafe(TOKEN_BYTES)
         self.enabled = enabled
         self._save()
@@ -115,6 +116,7 @@ class PhoneAccess:
         app.router.add_get("/manifest.webmanifest", self._manifest)
         app.router.add_get("/icon.png", self._page("icon.png", "image/png"))
         app.router.add_get("/ws", self._socket)
+        app.router.add_get("/check", self._check)
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         try:
@@ -152,17 +154,30 @@ class PhoneAccess:
 
     @web.middleware
     async def _guard(self, request: web.Request, handler):
-        hosts = self._allowed_hosts()
-        if (request.host or "").lower() not in hosts:
-            raise web.HTTPForbidden()
-        origin = request.headers.get("Origin")
-        if origin is not None and origin.lower().removeprefix("http://") not in hosts:
-            raise web.HTTPForbidden()
-        response = await handler(request)
+        try:
+            hosts = self._allowed_hosts()
+            if (request.host or "").lower() not in hosts:
+                raise web.HTTPForbidden()
+            origin = request.headers.get("Origin")
+            if origin is not None and origin.lower() not in {f"http://{host}" for host in hosts}:
+                raise web.HTTPForbidden()
+            response = await handler(request)
+        except web.HTTPException as error:
+            response = error
+            self._harden(response)
+            raise
+        self._harden(response)
+        return response
+
+    @staticmethod
+    def _harden(response: web.StreamResponse) -> None:
+        if response.prepared:
+            return  # a WebSocket upgrade has already sent its headers
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
-        return response
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; connect-src 'self' ws:; img-src 'self'; frame-ancestors 'none'")
 
     def _page(self, name: str, content_type: str):
         path = PAGE_DIR / name
@@ -175,7 +190,8 @@ class PhoneAccess:
         return handler
 
     def _token_ok(self, offered: str) -> bool:
-        return bool(self.token) and hmac.compare_digest(offered, self.token or "")
+        # Bytes, so a non-ASCII value is a plain mismatch instead of a TypeError.
+        return bool(self.token) and hmac.compare_digest(offered.encode(), (self.token or "").encode())
 
     async def _manifest(self, request: web.Request) -> web.Response:
         """The Home Screen app starts at the manifest's start_url, so that has to carry the token."""
@@ -188,6 +204,10 @@ class PhoneAccess:
             "icons": [{"src": "/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any"}],
         }
         return web.json_response(manifest, content_type="application/manifest+json")
+
+    async def _check(self, request: web.Request) -> web.Response:
+        """Lets the page tell a forgotten phone (403) from a Mac that is asleep (no answer)."""
+        return web.Response(status=204 if self._token_ok(request.query.get("t", "")) else 403)
 
     async def _socket(self, request: web.Request) -> web.WebSocketResponse:
         if not self._token_ok(request.query.get("t", "")):

@@ -107,6 +107,7 @@ final class RemoteClient: ObservableObject {
     private var task: URLSessionWebSocketTask?
     private var toastClear: Task<Void, Never>?
     private var retryDelay = RemoteClient.firstRetry
+    private var pendingLaunchLink: String?
     /// Microphone audio recorded before the TV starts listening.
     private var heldAudio = Data()
     private var voiceRequested = false
@@ -174,6 +175,12 @@ final class RemoteClient: ObservableObject {
                 if !voiceRequested { send(["type": "voice_end"]) }
             }
         case "error":
+            if envelope.for == "apps_launch", let link = pendingLaunchLink {
+                // The app manager could not open it; the app's web link still can.
+                pendingLaunchLink = nil
+                open(link)
+                return
+            }
             if let text = envelope.message { show(text) }
             if envelope.for == "voice_start" {
                 voiceRequested = false
@@ -186,6 +193,9 @@ final class RemoteClient: ObservableObject {
 
     private func linkLost() async {
         linkUp = false
+        // A restarted helper has a fresh app manager; forget the old link so pinned apps fall back to links.
+        appsLink = .unknown
+        installedApps = []
         if listening { onListeningEnded?() }
         listening = false
         voiceRequested = false
@@ -281,8 +291,10 @@ final class RemoteClient: ObservableObject {
 
     func connectApps() { send(["type": "apps_connect"]) }
     func refreshApps() { send(["type": "apps_list"]) }
-    func launchApp(_ package: String) {
+    /// Open an app through the TV's app manager. `fallbackLink` opens instead if that fails.
+    func launchApp(_ package: String, fallbackLink: String? = nil) {
         guard requireConnected() else { return }
+        pendingLaunchLink = fallbackLink
         send(["type": "apps_launch", "package": package])
     }
     func uninstallApp(_ package: String) { send(["type": "apps_uninstall", "package": package]) }

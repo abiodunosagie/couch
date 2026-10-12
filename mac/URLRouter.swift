@@ -13,6 +13,7 @@ final class URLRouter {
     private let model: AppModel
     private static let allowedKeys: Set<RemoteKey> = [.playPause, .pause, .play]
     private static let connectWaitSeconds = 20.0
+    private static let pollInterval = Duration.milliseconds(250)
 
     init(model: AppModel) {
         self.model = model
@@ -61,7 +62,7 @@ final class URLRouter {
         let deadline = Date().addingTimeInterval(Self.connectWaitSeconds)
         while Date() < deadline {
             if model.client.linkUp && model.client.state.isConnected { return true }
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            try? await Task.sleep(for: Self.pollInterval)
         }
         return false
     }

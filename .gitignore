@@ -18,3 +18,4 @@ build/
 .envrc
 adbkey
 adbkey.pub
+phone.json

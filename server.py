@@ -22,10 +22,10 @@ from aiohttp import WSMsgType, web
 from androidtvremote2 import AndroidTVRemote, CannotConnect, ConnectionClosed, InvalidAuth, VoiceStream
 from androidtvremote2.remote import VOICE_CHUNK_MIN_SIZE
 
-from apps import AppsError, AppsManager
+from apps import AppsError, AppsManager, AppsStatus
 from phone import PhoneAccess
 from text_input import EDIT_KEYS, NAVIGATION_KEYS, FieldTrackingProtocol
-from tv import check_pairing_code, find_tv, make_remote
+from tv import app_name, check_pairing_code, find_tv, make_remote
 
 TOKEN_HEADER = "X-Couch-Token"
 RETRY_SECONDS = 5.0
@@ -34,8 +34,11 @@ MAX_TEXT_LENGTH = 2000  # one paste
 # Room for a 2000 character paste as escaped JSON, and for audio frames.
 MAX_MESSAGE_BYTES = 65536
 PARENT_CHECK_SECONDS = 5.0
+MAX_PHONES = 6
 # A held voice button that never sends "voice_end" (app crashed) must not keep the TV listening.
 MAX_VOICE_SECONDS = 20.0
+VOICE_START_SECONDS = 3.0
+VOICE_START_ATTEMPTS = 2
 BAD_MESSAGE = "Bad message."
 TV_UNREACHABLE = "Can't reach the TV. Is it on and on the same Wi-Fi?"
 
@@ -77,7 +80,8 @@ class TVSession:
         self.status = "searching"
         self.notice = ""
         self.notice_id = 0
-        self.clients: set[web.WebSocketResponse] = set()
+        self.clients: set[web.WebSocketResponse] = set()  # the Mac app
+        self.phone_clients: set[web.WebSocketResponse] = set()
         self._lock = asyncio.Lock()
         self._background: set[asyncio.Task[Any]] = set()
         self._connector: asyncio.Task[None] | None = None
@@ -87,14 +91,23 @@ class TVSession:
         self._voice_buffer = bytearray()
         self._voice_timeout: asyncio.TimerHandle | None = None
         self.phone: PhoneAccess  # set by serve()
-        self.apps = AppsManager()
+        self.apps = AppsManager(on_status=self._apps_changed)
 
     # ------------------------------------------------------------ state
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, for_phone: bool = False) -> dict[str, Any]:
         remote = self.remote
         volume = remote.volume_info if remote else None
         field = self._field_protocol()
+        if field is None:
+            field_state = None
+        elif for_phone:
+            # Phones see that a box is open and how long its text is, never the text: it can be a password.
+            field_state = {"active": field.field_active, "value": "", "length": len(field.field_value)}
+        else:
+            # The Mac mirrors the TV text box so the user sees what they type.
+            field_state = {"active": field.field_active, "value": field.field_value}
+        app = remote.current_app if remote else None
         return {
             "type": "state",
             "status": self.status,
@@ -102,10 +115,10 @@ class TVSession:
             "notice_id": self.notice_id,
             "tv": self.tv_name,
             "is_on": remote.is_on if remote else None,
-            "app": remote.current_app if remote else None,
+            "app": app,
+            "app_name": app_name(app),
             "volume": dict(volume) if volume else None,
-            # The focused text box on the TV and its text, mirrored so the user sees what they type.
-            "field": {"active": field.field_active, "value": field.field_value} if field else None,
+            "field": field_state,
         }
 
     def _set(self, status: str, notice: str = "") -> None:
@@ -115,21 +128,48 @@ class TVSession:
             self.notice_id += 1
         self._push()
 
-    def _spawn(self, coro: Awaitable[Any]) -> None:
+    def spawn(self, coro: Awaitable[Any]) -> None:
         task = asyncio.ensure_future(coro)
         self._background.add(task)
         task.add_done_callback(self._background.discard)
 
     def _push(self) -> None:
-        """Schedule a state broadcast. Safe to call from library callbacks."""
-        self._spawn(self.broadcast(self.snapshot()))
+        """Schedule a state broadcast to every client. Safe to call from library callbacks."""
+        self.spawn(self._send_all(self.clients, self.snapshot()))
+        self.spawn(self._send_all(self.phone_clients, self.snapshot(for_phone=True)))
 
     async def broadcast(self, message: dict[str, Any]) -> None:
-        for ws in list(self.clients):
+        """Send to the Mac app only."""
+        await self._send_all(self.clients, message)
+
+    @staticmethod
+    async def _send_all(clients: set[web.WebSocketResponse], message: dict[str, Any]) -> None:
+        for ws in list(clients):
             try:
                 await ws.send_json(message)
             except (ConnectionError, RuntimeError):
-                self.clients.discard(ws)
+                clients.discard(ws)
+
+    # ------------------------------------------------------------ installed apps
+
+    def apps_message(self, installed: list[str] | None = None) -> dict[str, Any]:
+        message: dict[str, Any] = {"type": "apps", "status": str(self.apps.status)}
+        if installed is not None:
+            message["installed"] = installed
+        return message
+
+    def _apps_changed(self) -> None:
+        self.spawn(self.broadcast(self.apps_message()))
+        if self.apps.status == AppsStatus.READY:
+            self.spawn(self.refresh_apps())
+
+    async def refresh_apps(self) -> None:
+        """Send the Mac the list of installed apps. Errors become a status change, already sent."""
+        try:
+            installed = await self.apps.installed()
+        except AppsError:
+            return
+        await self.broadcast(self.apps_message(installed))
 
     # ------------------------------------------------------------ connection
 
@@ -259,7 +299,7 @@ class TVSession:
 
     # ------------------------------------------------------------ commands
 
-    def _require_connected(self) -> AndroidTVRemote:
+    def require_connected(self) -> AndroidTVRemote:
         # The library does not raise while it reconnects, it drops the key, so check ourselves.
         if self.status != "connected" or self.remote is None:
             raise UserError("Not connected to the TV right now.")
@@ -268,7 +308,7 @@ class TVSession:
     def send_key(self, key: object) -> None:
         if key not in ALLOWED_KEYS:
             raise UserError("Unknown button.")
-        self._require_connected().send_key_command(key)
+        self.require_connected().send_key_command(key)
 
     def edit(self, text: object = None, key: object = None, clear: bool = False) -> None:
         """Type into the focused TV text box: insert `text`, press an edit `key`, or `clear` it."""
@@ -293,7 +333,7 @@ class TVSession:
         link = APP_LINKS.get(app) if isinstance(app, str) else None
         if link is None:
             raise UserError("Unknown app.")
-        self._require_connected().send_launch_app_command(link)
+        self.require_connected().send_launch_app_command(link)
 
     def open(self, link: object) -> None:
         """Open a web link on the TV. Apps that claim the link (youtube.com, netflix.com) open it.
@@ -306,27 +346,34 @@ class TVSession:
         parts = urlparse(link)
         if parts.scheme not in ("http", "https") or not parts.netloc:
             raise UserError("Couch can open web links only.")
-        self._require_connected().send_launch_app_command(link)
+        self.require_connected().send_launch_app_command(link)
 
     def search_youtube(self, query: object) -> None:
         if not isinstance(query, str) or not query.strip() or len(query) > MAX_SEARCH_LENGTH:
             raise UserError(f"Search for 1 to {MAX_SEARCH_LENGTH} characters.")
-        self._require_connected().send_launch_app_command(YOUTUBE_SEARCH + quote_plus(query.strip()))
+        self.require_connected().send_launch_app_command(YOUTUBE_SEARCH + quote_plus(query.strip()))
 
     # ------------------------------------------------------------ voice
 
     async def voice_start(self, owner: web.WebSocketResponse) -> None:
         """Open the TV's voice search; audio then arrives as binary frames from `owner`."""
-        remote = self._require_connected()
+        remote = self.require_connected()
         if self._voice is not None:
             raise UserError("Already listening.")
         if not remote.is_voice_enabled:
             raise UserError("This TV does not accept voice from Couch.")
-        try:
-            self._voice = await remote.start_voice()
-        except (TimeoutError, ConnectionClosed) as exc:
-            log.info("voice did not start: %r", exc)
-            raise UserError("The TV did not start listening. Try again.") from None
+        for attempt in range(VOICE_START_ATTEMPTS):
+            try:
+                self._voice = await remote.start_voice(timeout=VOICE_START_SECONDS)
+                break
+            except TimeoutError as exc:
+                # On the screensaver the first press only wakes the TV; the second opens voice search.
+                log.info("voice did not start (attempt %s): %r", attempt + 1, exc)
+            except ConnectionClosed as exc:
+                log.info("voice did not start: %r", exc)
+                break
+        if self._voice is None:
+            raise UserError("The TV did not start listening. Try again.")
         self._voice_owner = owner
         self._voice_buffer.clear()
         self._voice_timeout = asyncio.get_running_loop().call_later(MAX_VOICE_SECONDS, self.voice_end)
@@ -362,7 +409,7 @@ class TVSession:
         self._voice_buffer.clear()
         listener, self._voice_owner = self._voice_owner, None
         if listener is not None and not listener.closed:
-            self._spawn(listener.send_json({"type": "voice", "listening": False}))
+            self.spawn(listener.send_json({"type": "voice", "listening": False}))
 
     def close(self) -> None:
         self.voice_end()
@@ -404,24 +451,30 @@ async def websocket(request: web.Request) -> web.WebSocketResponse:
     # browser rule in force even when no token is set (tvremote serve from Terminal).
     if request.headers.get("Origin") is None:
         raise web.HTTPForbidden()
-    return await run_socket(request, request.app[SESSION], HANDLERS, voice=True)
+    return await run_socket(request, request.app[SESSION], phone=False)
 
 
-async def run_socket(request: web.Request, session: TVSession, handlers: dict[str, Handler], voice: bool) -> web.WebSocketResponse:
-    """Serve one client: push TV state, run its requests through `handlers`."""
+async def run_socket(request: web.Request, session: TVSession, phone: bool) -> web.WebSocketResponse:
+    """Serve one client: push TV state, run its requests. Phones get fewer requests and no voice."""
+    clients = session.phone_clients if phone else session.clients
+    if phone and len(clients) >= MAX_PHONES:
+        raise web.HTTPServiceUnavailable()
+    handlers = PHONE_HANDLERS if phone else HANDLERS
     ws = web.WebSocketResponse(heartbeat=20, max_msg_size=MAX_MESSAGE_BYTES)
     await ws.prepare(request)
-    session.clients.add(ws)
-    await ws.send_json(session.snapshot())
+    clients.add(ws)
+    await ws.send_json(session.snapshot(for_phone=phone))
+    if not phone:
+        await ws.send_json(session.apps_message())
     try:
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
                 await handle_message(session, handlers, ws, msg.data)
-            elif msg.type == WSMsgType.BINARY and voice:
+            elif msg.type == WSMsgType.BINARY and not phone:
                 session.voice_audio(ws, msg.data)
     finally:
         session.voice_end(ws)
-        session.clients.discard(ws)
+        clients.discard(ws)
     return ws
 
 
@@ -478,38 +531,21 @@ async def _phone_reset(session: TVSession, ws: web.WebSocketResponse, _message: 
     await ws.send_json(session.phone.info())
 
 
-def _apps_message(session: TVSession, installed: list[str] | None = None) -> dict[str, Any]:
-    message: dict[str, Any] = {"type": "apps", "status": session.apps.status}
-    if installed is not None:
-        message["installed"] = installed
-    return message
+async def _apps_connect(session: TVSession, _ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    # Runs in the background (the TV may wait a minute for the user); status changes are pushed.
+    session.apps.connect(session.require_connected().host)
 
 
-async def _apps_connect(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
-    remote = session._require_connected()
-
-    def report() -> None:
-        session._spawn(ws.send_json(_apps_message(session)))
-
-    async def connect_and_list() -> None:
-        await session.apps.connect(remote.host, report)
-        if session.apps.status == "ready":
-            await _apps_list(session, ws, {})
-
-    # The TV may wait a minute for the user to allow this Mac; keep the socket free meanwhile.
-    session._spawn(connect_and_list())
-
-
-async def _apps_list(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+async def _apps_list(session: TVSession, _ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
     try:
         installed = await session.apps.installed()
     except AppsError as exc:
         raise UserError(str(exc)) from None
-    await ws.send_json(_apps_message(session, installed))
+    await session.broadcast(session.apps_message(installed))
 
 
 async def _apps_launch(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
-    session._require_connected()
+    session.require_connected()
     try:
         await session.apps.launch(message.get("package"))
     except AppsError as exc:
@@ -544,9 +580,10 @@ HANDLERS: dict[str, Handler] = {
     "apps_uninstall": _apps_uninstall,
 }
 
-# Phones get the remote and typing; pairing, voice and phone settings stay on the Mac.
+# Phones get the remote, typing and YouTube search. Pairing, voice, links, phone settings
+# and the app manager stay on the Mac.
 PHONE_HANDLERS: dict[str, Handler] = {
-    name: HANDLERS[name] for name in ("key", "edit", "app", "open", "search")
+    name: HANDLERS[name] for name in ("key", "edit", "app", "search")
 }
 
 
@@ -592,7 +629,7 @@ async def serve(port: int, host: str | None, name: str | None, parent_pid: int |
     # zeroconf logs a full traceback for every interface without a route (VPN, Thunderbolt bridge).
     logging.getLogger("zeroconf").setLevel(logging.ERROR)
     session = TVSession(host, name)
-    session.phone = PhoneAccess(lambda request: run_socket(request, session, PHONE_HANDLERS, voice=False))
+    session.phone = PhoneAccess(lambda request: run_socket(request, session, phone=True))
     shutdown = asyncio.Event()
     app = web.Application(middlewares=[local_only])
     app[SESSION] = session

@@ -9,16 +9,8 @@ const SWIPE_STEP_PX = 34;
 const TAP_SLOP_PX = 10;
 const RECONNECT_MS = 1500;
 
-const APP_NAMES = {
-  "com.google.android.youtube.tv": "YouTube",
-  "com.netflix.ninja": "Netflix",
-  "com.apple.atve.androidtv.appletv": "Apple TV",
-  "com.amazon.amazonvideo.livingroom": "Prime Video",
-  "com.disney.disneyplus": "Disney+",
-  "com.spotify.tv.android": "Spotify",
-  "com.google.android.apps.tv.launcherx": "Home screen",
-  "com.neilturner.aerialviews": "Screensaver",
-};
+const MAX_SEARCH = 200;  // MAX_SEARCH_LENGTH in server.py
+
 const STATUS_TEXT = {
   connected: "Connected", reconnecting: "Reconnecting", offline: "TV not reachable",
   unpaired: "Pair on the Mac first", pairing: "Pairing on the Mac", searching: "Looking for the TV",
@@ -26,6 +18,7 @@ const STATUS_TEXT = {
 
 const $ = (id) => document.getElementById(id);
 let socket = null;
+let retryTimer = 0;
 let state = { status: "searching" };
 let sheetMode = null; // "type" | "search"
 let toastTimer = 0;
@@ -54,7 +47,9 @@ const token = readToken();
 // ------------------------------------------------------------ connection
 
 function connect() {
-  if (!token) { $("gate").hidden = false; return; }
+  clearTimeout(retryTimer);
+  if (!token) { showGate(); return; }
+  if (socket && socket.readyState <= WebSocket.OPEN) return;
   socket = new WebSocket(`ws://${location.host}/ws?t=${encodeURIComponent(token)}`);
   socket.addEventListener("message", (event) => {
     let message;
@@ -62,13 +57,30 @@ function connect() {
     if (message.type === "state") render(message);
     else if (message.type === "error") toast(message.message);
   });
-  socket.addEventListener("close", (event) => {
+  socket.addEventListener("close", async () => {
+    socket = null;
     render({ ...state, status: "searching" });
     $("status").textContent = "Mac not reachable, retrying";
-    if (event.code === 1006 && !navigator.onLine) return;
-    setTimeout(connect, RECONNECT_MS);
+    // A refused code means the Mac forgot this phone: ask for a new scan instead of retrying forever.
+    try {
+      const check = await fetch(`/check?t=${encodeURIComponent(token)}`, { cache: "no-store" });
+      if (check.status === 403) { forgetToken(); return; }
+    } catch { /* the Mac is asleep or off the Wi-Fi: keep trying */ }
+    retryTimer = setTimeout(connect, RECONNECT_MS);
   });
 }
+
+function forgetToken() {
+  try { localStorage.removeItem(TOKEN_KEY); } catch { /* nothing stored */ }
+  history.replaceState(null, "", "/");
+  showGate();
+}
+
+function showGate() { $("gate").hidden = false; }
+
+// Coming back to the page (unlocking the phone, switching apps) reconnects at once.
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") connect(); });
+window.addEventListener("online", connect);
 
 function send(message) {
   if (!socket || socket.readyState !== WebSocket.OPEN) { toast("Not connected to the Mac."); return false; }
@@ -92,7 +104,7 @@ function render(next) {
   state = next;
   $("status").textContent = STATUS_TEXT[state.status] || "Connecting";
   $("tv").textContent = state.tv || "Couch";
-  const app = state.app ? (APP_NAMES[state.app] || state.app) : "";
+  const app = state.app_name || "";
   $("now").textContent = state.status === "connected" && app ? `Now on ${app}` : " ";
   for (const el of [$("dot"), $("light")]) {
     el.classList.toggle("live", state.status === "connected");
@@ -109,8 +121,9 @@ function renderMirror() {
   if (sheetMode !== "type") return;
   const field = state.field;
   mirror.classList.toggle("live", Boolean(field && field.active));
+  // The phone is never sent the text itself (it can be a password), only its length.
   mirror.textContent = field && field.active
-    ? (field.value ? `On the TV: ${field.value}` : "On the TV: empty")
+    ? (field.length ? `The TV box has ${field.length} character${field.length === 1 ? "" : "s"}.` : "The TV box is empty.")
     : "Select a text box on the TV first.";
 }
 
@@ -128,12 +141,14 @@ function holdable(button, key) {
   let delay = 0;
   let repeat = 0;
   const stop = () => { clearTimeout(delay); clearInterval(repeat); button.classList.remove("pressed"); };
+  // A held key stops by itself if the TV drops, instead of buzzing errors.
+  const repeatPress = () => { if (state.status !== "connected") stop(); else press(key); };
   button.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     stop();
     button.classList.add("pressed");
     press(key);
-    delay = setTimeout(() => { repeat = setInterval(() => press(key), REPEAT_EVERY_MS); }, REPEAT_DELAY_MS);
+    delay = setTimeout(() => { repeat = setInterval(repeatPress, REPEAT_EVERY_MS); }, REPEAT_DELAY_MS);
   });
   for (const type of ["pointerup", "pointercancel", "pointerleave"]) button.addEventListener(type, stop);
   window.addEventListener("blur", stop);
@@ -167,20 +182,27 @@ const PAD_KEYS = { up: "DPAD_UP", down: "DPAD_DOWN", left: "DPAD_LEFT", right: "
 
 pad.addEventListener("pointerdown", (event) => {
   event.preventDefault();
+  if (gesture) return;  // one finger at a time; a second touch is ignored
   pad.setPointerCapture(event.pointerId);
-  gesture = { x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, moved: false, axis: null, hold: 0 };
+  const current = { id: event.pointerId, x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY,
+                    moved: false, axis: null, hold: 0, repeat: 0, repeated: false };
+  gesture = current;
   const edge = edgeOf(event.clientX, event.clientY);
   pad.dataset.dir = edge;
   if (edge !== "ok") {
     // Holding an edge repeats, like the real pad.
-    gesture.hold = setTimeout(() => {
-      gesture.repeat = setInterval(() => press(PAD_KEYS[edge]), REPEAT_EVERY_MS);
+    current.hold = setTimeout(() => {
+      current.repeated = true;
+      current.repeat = setInterval(() => {
+        if (state.status !== "connected") { clearInterval(current.repeat); return; }
+        press(PAD_KEYS[edge]);
+      }, REPEAT_EVERY_MS);
     }, REPEAT_DELAY_MS);
   }
 });
 
 pad.addEventListener("pointermove", (event) => {
-  if (!gesture) return;
+  if (!gesture || event.pointerId !== gesture.id) return;
   const dx = event.clientX - gesture.lastX;
   const dy = event.clientY - gesture.lastY;
   if (!gesture.moved && Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) < TAP_SLOP_PX) return;
@@ -201,10 +223,11 @@ pad.addEventListener("pointermove", (event) => {
 });
 
 function endGesture(event) {
-  if (!gesture) return;
+  if (!gesture || event.pointerId !== gesture.id) return;
   clearTimeout(gesture.hold);
   clearInterval(gesture.repeat);
-  if (!gesture.moved && event.type === "pointerup") press(PAD_KEYS[edgeOf(gesture.x, gesture.y)]);
+  // A tap presses once on release; a hold already pressed while repeating.
+  if (!gesture.moved && !gesture.repeated && event.type === "pointerup") press(PAD_KEYS[edgeOf(gesture.x, gesture.y)]);
   gesture = null;
   delete pad.dataset.dir;
 }
@@ -240,6 +263,9 @@ $("sheet-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const text = $("sheet-input").value;
   if (!text.trim()) return;
+  // Keep the text when it cannot go yet, so nothing typed is lost.
+  if (sheetMode === "type" && !(state.field && state.field.active)) { toast("Select a text box on the TV first."); return; }
+  if (sheetMode === "search" && text.length > MAX_SEARCH) { toast(`Search for up to ${MAX_SEARCH} characters.`); return; }
   const ok = sheetMode === "type"
     ? sendIfConnected({ type: "edit", text })
     : sendIfConnected({ type: "search", query: text });

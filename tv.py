@@ -146,6 +146,32 @@ async def find_tv(host: str | None, name: str | None) -> tuple[str, str]:
 
 # ---------------------------------------------------------------- helpers
 
+KNOWN_APPS_FILE = Path(__file__).parent / "known_apps.json"
+
+
+def _load_known_apps() -> dict[str, dict]:
+    try:
+        table = json.loads(KNOWN_APPS_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {k: v for k, v in table.items() if not k.startswith("_") and isinstance(v, dict)}
+
+
+KNOWN_APPS = _load_known_apps()
+
+
+def app_name(package: str | None) -> str | None:
+    """A readable app name, the same way the Mac app names it (KnownApps.swift)."""
+    if not package:
+        return None
+    known = KNOWN_APPS.get(package, {}).get("name")
+    if isinstance(known, str):
+        return known
+    filler = {"com", "tv", "android", "app", "atv", "google", "androidtv"}
+    parts = [part for part in package.split(".") if part not in filler]
+    return (parts[-1] if parts else package).capitalize()
+
+
 def check_pairing_code(code: str) -> str:
     """Normalise a pairing code; raise ValueError unless it is the 6 hex characters the TV shows."""
     code = code.strip().upper()

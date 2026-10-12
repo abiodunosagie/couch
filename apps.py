@@ -3,38 +3,58 @@
 The remote protocol cannot list, open by name or remove apps. Android's debug bridge can,
 once the user turns on USB debugging in the TV's Developer options and allows this Mac
 the first time it connects (the TV shows a prompt). The bridge gives full control of the
-TV, so this module only ever runs three fixed commands, and every package name is checked
-against a strict pattern before it goes into one. Uninstall is limited to apps the user
-installed (`pm list packages -3`), never system apps.
+TV, so this module only runs a few fixed commands, every argument is checked against a
+strict pattern and shell quoted, and uninstall is limited to apps the user installed
+(`pm list packages -3`), never system apps.
+
+ADB runs on its own thread with the blocking client: the async client spins without
+yielding when the TV drops the socket, which would freeze the whole helper.
 """
 
 from __future__ import annotations
 
 import asyncio
+import enum
 import logging
 import os
 import re
-import socket
+import shlex
+import threading
+from collections.abc import Callable
 
-from adb_shell.adb_device_async import AdbDeviceTcpAsync
+from adb_shell.adb_device import AdbDeviceTcp
 from adb_shell.auth.keygen import keygen
 from adb_shell.auth.sign_cryptography import CryptographySigner
-from adb_shell.exceptions import AdbConnectionError, AdbTimeoutError, DeviceAuthError, TcpTimeoutException
+from adb_shell.exceptions import DeviceAuthError, TcpTimeoutException
 
 from tv import CONFIG_DIR, ensure_config_dir
 
 ADB_PORT = 5555
 KEY_FILE = CONFIG_DIR / "adbkey"
+PUBLIC_KEY_FILE = CONFIG_DIR / "adbkey.pub"
 # The TV shows "Allow USB debugging?" and waits for the user; give them time to answer.
 AUTH_TIMEOUT_SECONDS = 90.0
 COMMAND_TIMEOUT_SECONDS = 15.0
+READ_TIMEOUT_SECONDS = 3.0
 PORT_CHECK_SECONDS = 1.5
+MAX_PACKAGE_LENGTH = 200
 # An Android package name: letters, digits and underscores in dot separated parts.
 PACKAGE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+")
 # A launchable component as printed by resolve-activity: package/activity.
 COMPONENT = re.compile(r"[A-Za-z][A-Za-z0-9_.]*/[A-Za-z0-9_.$]+")
+PACKAGE_PREFIX = "package:"
 
 log = logging.getLogger("tvremote.apps")
+
+
+class AppsStatus(enum.StrEnum):
+    """Matches AppsLink in the Mac app."""
+
+    UNKNOWN = "unknown"  # not tried yet, or the link dropped
+    OFF = "off"  # debugging is not on (port closed)
+    WAITING = "waiting"  # the TV is asking the user to allow this Mac
+    READY = "ready"
+    DENIED = "denied"  # the user said no, or nobody answered in time
 
 
 class AppsError(Exception):
@@ -42,35 +62,84 @@ class AppsError(Exception):
 
 
 def check_package(package: object) -> str:
-    if not isinstance(package, str) or len(package) > 200 or not PACKAGE_NAME.fullmatch(package):
+    if not isinstance(package, str) or len(package) > MAX_PACKAGE_LENGTH or not PACKAGE_NAME.fullmatch(package):
         raise AppsError("That is not an app name.")
     return package
 
 
-class AppsManager:
-    """One ADB connection to the TV, opened on demand."""
+def _parse_packages(output: str) -> list[str]:
+    names = (line.removeprefix(PACKAGE_PREFIX).strip() for line in output.splitlines() if line.startswith(PACKAGE_PREFIX))
+    return sorted(name for name in names if PACKAGE_NAME.fullmatch(name))
 
-    # off: debugging is not on (port closed). waiting: the TV is asking the user to allow
-    # this Mac. ready: connected. denied: the user said no, or the prompt timed out.
-    def __init__(self) -> None:
-        self.status = "unknown"
+
+def _signer() -> CryptographySigner:
+    ensure_config_dir()
+    if not KEY_FILE.exists():
+        # Create both files owner-only first; keygen then writes into them and keeps the mode.
+        for path in (KEY_FILE, PUBLIC_KEY_FILE):
+            os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
+        keygen(str(KEY_FILE))
+    for path in (KEY_FILE, PUBLIC_KEY_FILE):
+        if path.exists():
+            os.chmod(path, 0o600)
+    return CryptographySigner(str(KEY_FILE))
+
+
+class AppsManager:
+    """One ADB connection to the TV, opened on demand. Every call runs on a worker thread."""
+
+    def __init__(self, on_status: Callable[[], None]) -> None:
+        self.status = AppsStatus.UNKNOWN
+        self._on_status = on_status
+        self._device: AdbDeviceTcp | None = None
         self._host: str | None = None
-        self._device: AdbDeviceTcpAsync | None = None
-        self._lock = asyncio.Lock()
+        self._thread_lock = threading.Lock()
+        self._connecting: asyncio.Task[None] | None = None
         self._installed: set[str] = set()
 
-    def _signer(self) -> CryptographySigner:
-        ensure_config_dir()
-        if not KEY_FILE.exists():
-            previous = os.umask(0o077)
+    def _set(self, status: AppsStatus) -> None:
+        if status != self.status:
+            self.status = status
+            self._on_status()
+
+    # ------------------------------------------------------------ connection
+
+    def connect(self, host: str) -> None:
+        """Start connecting unless an attempt is already running (the TV prompt can take a minute)."""
+        if self._connecting and not self._connecting.done():
+            self._on_status()  # just repeat the current state
+            return
+        self._connecting = asyncio.get_running_loop().create_task(self._connect(host))
+
+    async def _connect(self, host: str) -> None:
+        if self.status == AppsStatus.READY and self._host == host and self._device and self._device.available:
+            self._on_status()
+            return
+        if not await self._port_open(host):
+            self._set(AppsStatus.OFF)
+            return
+        self._set(AppsStatus.WAITING)
+        status = await asyncio.to_thread(self._connect_blocking, host)
+        self._set(status)
+
+    def _connect_blocking(self, host: str) -> AppsStatus:
+        with self._thread_lock:
+            self._close_blocking()
+            device = AdbDeviceTcp(host, ADB_PORT, default_transport_timeout_s=COMMAND_TIMEOUT_SECONDS)
             try:
-                keygen(str(KEY_FILE))
-            finally:
-                os.umask(previous)
-        for path in (KEY_FILE, KEY_FILE.with_name(KEY_FILE.name + ".pub")):
-            if path.exists():
-                os.chmod(path, 0o600)
-        return CryptographySigner(str(KEY_FILE))
+                device.connect(rsa_keys=[_signer()], auth_timeout_s=AUTH_TIMEOUT_SECONDS,
+                               transport_timeout_s=AUTH_TIMEOUT_SECONDS, read_timeout_s=AUTH_TIMEOUT_SECONDS)
+            except (DeviceAuthError, TcpTimeoutException):
+                log.info("adb: the TV did not allow this Mac")
+                self._safe_close(device)
+                return AppsStatus.DENIED
+            except Exception as exc:  # any protocol or socket failure: report it, never leave "waiting"
+                log.info("adb connect failed: %r", exc)
+                self._safe_close(device)
+                return AppsStatus.OFF
+            self._device = device
+            self._host = host
+            return AppsStatus.READY
 
     @staticmethod
     async def _port_open(host: str) -> bool:
@@ -85,97 +154,82 @@ class AppsManager:
             pass
         return True
 
-    async def connect(self, host: str, on_status) -> None:
-        """Connect, reporting each state through `on_status` (the TV prompt can take a while)."""
-        async with self._lock:
-            if self._device and self._device.available and self._host == host:
-                return
-            await self._close()
-            self._host = host
-            if not await self._port_open(host):
-                self._set("off", on_status)
-                return
-            self._set("waiting", on_status)
-            device = AdbDeviceTcpAsync(host, ADB_PORT, default_transport_timeout_s=COMMAND_TIMEOUT_SECONDS)
-            try:
-                signer = await asyncio.get_running_loop().run_in_executor(None, self._signer)
-                await device.connect(rsa_keys=[signer], auth_timeout_s=AUTH_TIMEOUT_SECONDS)
-            except DeviceAuthError:
-                self._set("denied", on_status)
-                return
-            except (AdbConnectionError, AdbTimeoutError, TcpTimeoutException, OSError, socket.timeout) as exc:
-                log.info("adb connect failed: %r", exc)
-                self._set("denied" if isinstance(exc, AdbTimeoutError) else "off", on_status)
-                return
-            self._device = device
-            self._set("ready", on_status)
+    @staticmethod
+    def _safe_close(device: AdbDeviceTcp) -> None:
+        try:
+            device.close()
+        except Exception:  # closing a dead link must not hide the real error
+            pass
 
-    def _set(self, status: str, on_status) -> None:
-        self.status = status
-        on_status()
-
-    async def _close(self) -> None:
+    def _close_blocking(self) -> None:
         if self._device:
-            try:
-                await self._device.close()
-            except Exception:  # closing a dead link must not stop a reconnect
-                pass
+            self._safe_close(self._device)
             self._device = None
 
     async def close(self) -> None:
-        async with self._lock:
-            await self._close()
+        if self._connecting:
+            self._connecting.cancel()
+        await asyncio.to_thread(lambda: self._with_lock(self._close_blocking))
 
-    async def _shell(self, command: str) -> str:
-        if not self._device or not self._device.available:
-            raise AppsError("Couch is not connected to the TV's app manager.")
-        try:
-            output = await self._device.shell(command, timeout_s=COMMAND_TIMEOUT_SECONDS)
-        except (AdbConnectionError, AdbTimeoutError, TcpTimeoutException, OSError) as exc:
-            log.info("adb command failed: %r", exc)
-            await self._close()
-            self.status = "unknown"
-            raise AppsError("Lost the connection to the TV's app manager.") from None
-        return output if isinstance(output, str) else ""
+    def _with_lock(self, work: Callable[[], object]) -> object:
+        with self._thread_lock:
+            return work()
 
     # ------------------------------------------------------------ commands
 
+    async def _shell(self, *commands: str) -> list[str]:
+        """Run commands in order on the worker thread; any failure marks the link as down."""
+
+        def run() -> list[str]:
+            with self._thread_lock:
+                if not self._device or not self._device.available:
+                    raise AppsError("Couch is not connected to the TV's app manager.")
+                results = []
+                for command in commands:
+                    output = self._device.shell(command, timeout_s=COMMAND_TIMEOUT_SECONDS,
+                                                read_timeout_s=READ_TIMEOUT_SECONDS)
+                    results.append(output if isinstance(output, str) else "")
+                return results
+
+        try:
+            return await asyncio.to_thread(run)
+        except AppsError:
+            self._set(AppsStatus.UNKNOWN)
+            raise
+        except Exception as exc:
+            log.info("adb command failed: %r", exc)
+            await asyncio.to_thread(lambda: self._with_lock(self._close_blocking))
+            self._set(AppsStatus.UNKNOWN)
+            raise AppsError("Lost the connection to the TV's app manager. Open Apps to reconnect.") from None
+
     async def installed(self) -> list[str]:
         """Apps the user installed (not system apps), sorted by package name."""
-        async with self._lock:
-            output = await self._shell("pm list packages -3")
-        packages = sorted(
-            line.removeprefix("package:").strip()
-            for line in output.splitlines()
-            if line.startswith("package:") and PACKAGE_NAME.fullmatch(line.removeprefix("package:").strip())
-        )
+        (output,) = await self._shell("pm list packages -3")
+        packages = _parse_packages(output)
         self._installed = set(packages)
         return packages
 
     async def launch(self, package: object) -> None:
         name = check_package(package)
-        async with self._lock:
-            component = (await self._shell(
-                f"cmd package resolve-activity --brief -c android.intent.category.LEANBACK_LAUNCHER {name}"
-            )).strip().splitlines()
-            target = component[-1].strip() if component else ""
-            if COMPONENT.fullmatch(target):
-                result = await self._shell(f"am start -n {target}")
-                if "Error" not in result:
-                    return
-            # No TV launcher entry; ask Android to start it any way it can.
-            result = await self._shell(f"monkey -p {name} -c android.intent.category.LAUNCHER 1")
+        (resolved,) = await self._shell(
+            f"cmd package resolve-activity --brief -c android.intent.category.LEANBACK_LAUNCHER {shlex.quote(name)}")
+        lines = resolved.strip().splitlines()
+        target = lines[-1].strip() if lines else ""
+        if COMPONENT.fullmatch(target):
+            (result,) = await self._shell(f"am start -n {shlex.quote(target)}")
+            if "Error" not in result:
+                return
+        # No TV launcher entry; ask Android to start it any way it can.
+        (result,) = await self._shell(f"monkey -p {shlex.quote(name)} -c android.intent.category.LAUNCHER 1")
         if "No activities found" in result or "aborted" in result:
             raise AppsError("That app has no screen to open.")
 
     async def uninstall(self, package: object) -> None:
         name = check_package(package)
         if name not in self._installed:
-            # Only apps from the last list of user installed apps; never system apps.
             raise AppsError("Couch only removes apps you installed.")
-        async with self._lock:
-            result = (await self._shell(f"pm uninstall --user 0 {name}")).strip()
-        if not result.startswith("Success"):
-            log.info("uninstall %s: %s", name, result[:200])
+        (result,) = await self._shell(f"pm uninstall --user 0 {shlex.quote(name)}")
+        if not result.strip().startswith("Success"):
+            log.info("uninstall %s: %s", name, result.strip()[:200])
             raise AppsError("The TV did not remove that app.")
         self._installed.discard(name)

@@ -2,11 +2,14 @@
 
 androidtvremote2 0.3.2 addresses text edits with the `field_counter` from the TV's
 `remote_ime_batch_edit` message. Google TV ignores edits sent that way. It accepts
-them only when they carry the id of the focused field, which it announces in
-`text_field_status.counter_field`: in `remote_ime_key_inject` when a field gets
-focus, and in `remote_ime_show_request` after each accepted edit, where the id moves
-on by one and the field's full text comes along. Verified against a Chromecast with
-Google TV 4K on 2026-10-12.
+them only when they carry
+- as `ime_counter`, the app counter from `remote_ime_key_inject.app_info.counter`
+  (the library's batch counter can lag behind it, and then every edit is dropped), and
+- as `field_counter`, the id of the focused field, announced in
+  `text_field_status.counter_field`: in `remote_ime_key_inject` when a field gets focus,
+  and in `remote_ime_show_request` after each accepted edit, where the id moves on and
+  the field's full text comes along.
+Verified against a Chromecast with Google TV 4K on 2026-10-12.
 
 `install()` swaps the library's protocol class for one that tracks the field, mirrors
 its text, and sends edits one at a time so each carries the id the TV expects.
@@ -55,6 +58,14 @@ for _key in EDIT_KEYS:
         raise ImportError(f"androidtvremote2 has no KEYCODE_{_key}")
 
 
+def _cursor(status) -> int | None:
+    """The cursor from a text field status. Proto3 drops zero values, so 0/0 on text that is
+    not empty means "not reported" rather than "at the start"."""
+    if status.start == 0 and status.end == 0 and status.value:
+        return None
+    return status.end
+
+
 @dataclass
 class _Insert:
     text: str
@@ -71,7 +82,11 @@ class FieldTrackingProtocol(RemoteProtocol):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.text_field_id = 0
+        self.app_counter = 0
         self.field_value = ""
+        # Cursor in the field as the TV last reported it. An insert must name the cursor position
+        # after it, counted over the whole field: the TV cuts the field off at that position.
+        self.cursor = 0
         self.on_field_changed: Callable[[], None] | None = None
         self._edits: deque[_Insert | _Key] = deque()
         self._id_moved = asyncio.Event()
@@ -90,18 +105,23 @@ class FieldTrackingProtocol(RemoteProtocol):
         else:
             if msg.HasField("remote_ime_key_inject"):
                 inject = msg.remote_ime_key_inject
+                if inject.HasField("app_info") and inject.app_info.counter:
+                    self.app_counter = inject.app_info.counter
                 # Focus moved: to a text field (it has a status) or away from one (it has none).
                 if inject.HasField("text_field_status"):
-                    self._field_update(inject.text_field_status.counter_field, inject.text_field_status.value)
+                    status = inject.text_field_status
+                    self._field_update(status.counter_field, status.value, _cursor(status))
                 else:
-                    self._field_update(0, "")
+                    self._field_update(0, "", 0)
             elif msg.HasField("remote_ime_show_request"):
                 status = msg.remote_ime_show_request.remote_text_field_status
-                self._field_update(status.counter_field, status.value)
+                self._field_update(status.counter_field, status.value, _cursor(status))
         super()._handle_message(raw_msg)
 
-    def _field_update(self, field_id: int, value: str) -> None:
+    def _field_update(self, field_id: int, value: str, cursor: int | None) -> None:
         changed = (field_id != 0) != self.field_active or value != self.field_value
+        # No cursor reported: assume the end of the text, where typing normally happens.
+        self.cursor = min(cursor, len(value)) if cursor is not None else len(value)
         if field_id != self.text_field_id:
             self._id_moved.set()
         self.text_field_id = field_id
@@ -172,10 +192,11 @@ class FieldTrackingProtocol(RemoteProtocol):
 
     def _send_insert(self, text: str) -> None:
         msg = RemoteMessage()
-        field = RemoteImeObject(start=len(text), end=len(text), value=text)
+        after = self.cursor + len(text)
+        field = RemoteImeObject(start=after, end=after, value=text)
         msg.remote_ime_batch_edit.CopyFrom(
             RemoteImeBatchEdit(
-                ime_counter=self.ime_counter,
+                ime_counter=self.app_counter or self.ime_counter,
                 field_counter=self.text_field_id,
                 edit_info=[RemoteEditInfo(insert=1, text_field_status=field)],
             )

@@ -43,6 +43,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BUILD/Couch" "$APP/Contents/MacOS/Couch"
 cp "$BUILD/Couch.icns" "$APP/Contents/Resources/Couch.icns"
+cp "$PROJECT/known_apps.json" "$APP/Contents/Resources/known_apps.json"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

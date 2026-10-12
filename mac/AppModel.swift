@@ -49,6 +49,9 @@ final class AppModel: ObservableObject {
     @Published var unavailableShortcuts: [String] = []
 
     private var linkWatch: AnyCancellable?
+    private var installedWatch: AnyCancellable?
+    /// Apps asked to be uninstalled; unpinned only once the TV's list no longer has them.
+    private var uninstalling: Set<String> = []
 
     init() {
         client = RemoteClient(token: helper.token)
@@ -63,9 +66,27 @@ final class AppModel: ObservableObject {
             self.startFailed = !(await self.helper.ensureRunning())
         }
         // A slow first start can time out and then succeed; clear the error once the link is up.
+        installedWatch = client.$installedApps.dropFirst().sink { [weak self] installed in
+            MainActor.assumeIsolated {
+                guard let self, !installed.isEmpty || self.client.appsLink == .ready else { return }
+                for package in self.uninstalling where !installed.contains(package) {
+                    self.favourites.unpin(package)
+                    self.favourites.forget(package)
+                    self.client.show("\(friendlyApp(package)) was removed from the TV.")
+                }
+                // Still listed means the TV refused (its error toast already showed); either way this request is done.
+                self.uninstalling.removeAll()
+            }
+        }
         linkWatch = client.$linkUp.sink { [weak self] up in
             if up { MainActor.assumeIsolated { self?.startFailed = false } }
         }
+    }
+
+    /// Uninstall from the TV. The pin goes only after the TV confirms, so a failed removal keeps it.
+    func uninstall(_ package: String) {
+        uninstalling.insert(package)
+        client.uninstallApp(package)
     }
 
     func start() async {
@@ -76,7 +97,7 @@ final class AppModel: ObservableObject {
     /// Open a pinned app: by package through the TV's app manager when it is on, else by its web link.
     func openApp(_ app: FavouriteApp) {
         if client.appsLink == .ready {
-            client.launchApp(app.package)
+            client.launchApp(app.package, fallbackLink: app.link)
         } else if let link = app.link {
             client.open(link)
         } else {

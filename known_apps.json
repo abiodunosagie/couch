@@ -1,0 +1,16 @@
+{
+  "_comment": "Common Google TV apps and screens by package. Read by the helper (tv.py), the Mac app (KnownApps.swift) and, through the helper, the phone page. link: a web link the app owns, which opens it when the TV's app manager is off. screen: a system screen, not an app to pin.",
+  "com.google.android.youtube.tv": { "name": "YouTube", "link": "https://www.youtube.com" },
+  "com.google.android.youtube.tvkids": { "name": "YouTube Kids", "link": "https://www.youtubekids.com" },
+  "com.netflix.ninja": { "name": "Netflix", "link": "https://www.netflix.com/title" },
+  "com.amazon.amazonvideo.livingroom": { "name": "Prime Video", "link": "https://app.primevideo.com" },
+  "com.disney.disneyplus": { "name": "Disney+", "link": "https://www.disneyplus.com" },
+  "com.apple.atve.androidtv.appletv": { "name": "Apple TV", "link": "https://tv.apple.com" },
+  "com.spotify.tv.android": { "name": "Spotify", "link": "https://open.spotify.com" },
+  "com.wbd.stream": { "name": "Max", "link": "https://play.max.com" },
+  "com.google.android.apps.tv.launcherx": { "name": "Home screen", "screen": true },
+  "com.google.android.tvlauncher": { "name": "Home screen", "screen": true },
+  "com.android.tv.settings": { "name": "Settings", "screen": true },
+  "com.google.android.katniss": { "name": "Voice search", "screen": true },
+  "com.neilturner.aerialviews": { "name": "Screensaver", "screen": true }
+}

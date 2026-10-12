@@ -30,8 +30,8 @@ final class Favourites: ObservableObject {
            let saved = try? JSONDecoder().decode([FavouriteApp].self, from: data) {
             pinned = saved
         } else {
-            pinned = [FavouriteApp(package: "com.google.android.youtube.tv", name: "YouTube",
-                                   link: KnownApps.all["com.google.android.youtube.tv"]?.link)]
+            pinned = [FavouriteApp(package: KnownApps.youtube, name: friendlyApp(KnownApps.youtube),
+                                   link: KnownApps.all[KnownApps.youtube]?.link)]
         }
         seen = defaults.stringArray(forKey: Self.seenKey) ?? []
         watch = client.$state.map(\.app).removeDuplicates().sink { [weak self] app in

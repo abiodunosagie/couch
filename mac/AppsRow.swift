@@ -23,8 +23,7 @@ struct AppsRow: View {
                                 remove: { withAnimation(.easeOut(duration: 0.15)) { favourites.unpin(app.package) } })
                     }
                 }
-                .padding(.vertical, 6)  // room for the remove badge
-                .padding(.trailing, 6)
+                .padding(.vertical, 2)
             }
             Button { model.showingApps = true } label: {
                 Label(favourites.pinned.isEmpty ? "Add apps" : "Manage", systemImage: "square.grid.2x2")
@@ -48,6 +47,13 @@ private struct AppChip: View {
             .buttonStyle(.bordered)
             .controlSize(compact ? .small : .regular)
             .help("Open \(app.name) on the TV")
+            .contextMenu {
+                Button("Open", action: open)
+                Button("Remove from Apps Row", role: .destructive, action: remove)
+            }
+            // The badge sits inside the padded area, so moving onto it keeps the hover.
+            .padding(.top, 6)
+            .padding(.trailing, 6)
             .overlay(alignment: .topTrailing) {
                 if hovering {
                     Button(action: remove) {
@@ -57,16 +63,12 @@ private struct AppChip: View {
                             .foregroundStyle(.white, .gray)
                     }
                     .buttonStyle(.plain)
-                    .offset(x: 6, y: -6)
                     .help("Remove \(app.name) from this row")
                     .accessibilityLabel("Remove \(app.name)")
                     .transition(.scale.combined(with: .opacity))
                 }
             }
+            .contentShape(Rectangle())
             .onHover { inside in withAnimation(.easeOut(duration: 0.12)) { hovering = inside } }
-            .contextMenu {
-                Button("Open", action: open)
-                Button("Remove from Apps Row", role: .destructive, action: remove)
-            }
     }
 }
