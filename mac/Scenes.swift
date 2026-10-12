@@ -65,6 +65,7 @@ final class Scenes: ObservableObject {
     private var task: Task<Void, Never>?
     private var currentRun: UUID?
     private static let key = "scenes"
+    private static let unreadableKey = "scenes.unreadable"
     /// Gap between steps so the TV keeps up.
     private static let stepGap: UInt64 = 400_000_000
     static let maxWaitSeconds = 60
@@ -73,10 +74,13 @@ final class Scenes: ObservableObject {
         self.client = client
         self.automations = automations
         self.favourites = favourites
-        if let data = UserDefaults.standard.data(forKey: Self.key),
-           let saved = try? JSONDecoder().decode([TVScene].self, from: data) {
+        let data = UserDefaults.standard.data(forKey: Self.key)
+        if let data, let saved = try? JSONDecoder().decode([TVScene].self, from: data) {
             scenes = saved
         } else {
+            // Saved by a build that knows a step this one does not: keep a copy before the
+            // defaults below are saved over it, so going back to that build loses nothing.
+            if let data { UserDefaults.standard.set(data, forKey: Self.unreadableKey) }
             scenes = [
                 TVScene(name: "Movie night", steps: [.turnOn, .wait(seconds: 4), .openApp(package: KnownApps.netflix)]),
                 TVScene(name: "Good night", steps: [.press(.pause), .wait(seconds: 1), .turnOff]),
