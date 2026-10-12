@@ -23,6 +23,9 @@ struct MenuPanelView: View {
                     Text(friendlyApp(client.state.app)).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button { client.openSettings() } label: { Image(systemName: "gearshape") }
+                    .buttonStyle(.borderless)
+                    .help("Open the TV's Settings")
                 Button { model.searching.toggle() } label: { Image(systemName: "magnifyingglass") }
                     .buttonStyle(.borderless)
                     .help("Search YouTube on the TV (Command F)")
@@ -62,6 +65,7 @@ struct MenuPanelView: View {
             if client.state.needsPairing {
                 PairingForm(client: client)
             } else {
+                RecentStrip(client: client, compact: true)
                 AppsRow(model: model, compact: true)
                 if model.typing {
                     TypingPanel(model: model, compact: true)

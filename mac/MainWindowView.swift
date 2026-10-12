@@ -47,6 +47,10 @@ struct MainWindowView: View {
                 } else if client.state.needsPairing {
                     PairingForm(client: client)
                 } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Recent").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                        RecentStrip(client: client)
+                    }
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Apps").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
                         AppsRow(model: model)
@@ -59,10 +63,12 @@ struct MainWindowView: View {
                         HStack(spacing: 8) {
                             Button { model.typing = true } label: { Label("Type", systemImage: "keyboard") }
                                 .help("Type into the TV with your keyboard (/)")
-                            Button { model.searching = true } label: { Label("Search YouTube", systemImage: "magnifyingglass") }
+                            Button { model.searching = true } label: { Label("Search", systemImage: "magnifyingglass") }
                                 .help("Search YouTube on the TV (Command F)")
-                            Button { model.sendClipboardLink() } label: { Label("Send link", systemImage: "link") }
+                            Button { model.sendClipboardLink() } label: { Label("Link", systemImage: "link") }
                                 .help("Play the link on your clipboard on the TV. You can also drop a link on this window.")
+                            Button { client.openSettings() } label: { Label("Settings", systemImage: "gearshape") }
+                                .help("Open the TV's Settings")
                         }
                     }
                 }

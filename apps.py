@@ -23,6 +23,7 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
+from tv import CONFIG_DIR, ensure_config_dir
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
@@ -57,6 +58,8 @@ COMPONENT = re.compile(r"[A-Za-z][A-Za-z0-9_.]*/[A-Za-z0-9_.$]+")
 PAIRING_CODE = re.compile(r"\d{6}")
 HOST_PORT = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3}):(\d{2,5})")
 PACKAGE_PREFIX = "package:"
+# Set once the app manager has worked; from then on Couch reconnects by itself.
+LINKED_FILE = CONFIG_DIR / "apps_linked"
 
 log = logging.getLogger("tvremote.apps")
 
@@ -114,6 +117,44 @@ def lost_device(output: str) -> bool:
 def paired(output: str) -> bool:
     """`adb pair` output on success: "Successfully paired to h:p [guid=...]"."""
     return "successfully paired" in output.lower()
+
+
+# System parts that show up as recent tasks but are not apps to switch to.
+NOT_RECENT_APPS = frozenset({
+    "com.android.systemui", "com.google.android.packageinstaller", "com.google.android.apps.tv.dreamx",
+    "com.google.android.apps.tv.launcherx", "com.google.android.tvlauncher", "com.google.android.katniss",
+})
+MAX_RECENTS = 12
+
+
+def parse_recents(output: str, hidden: frozenset[str] = frozenset()) -> list[dict]:
+    """Recent tasks from `dumpsys activity recents`, newest first, one per app.
+
+    Each block has the package in mActivityComponent (the "A=" field is the task affinity,
+    which can differ, like com.google.android.youtube.tv.main), and "inactive for Ns".
+    "live" is whether the app still runs (Activities listed); otherwise opening it starts fresh.
+    """
+    recents: list[dict] = []
+    seen: set[str] = set()
+    for block in output.split("* Recent #")[1:]:
+        if "type=standard" not in block.split("\n", 1)[0]:
+            continue
+        component = re.search(r"mActivityComponent=([A-Za-z0-9_.]+)/", block)
+        if not component:
+            continue
+        package = component.group(1)
+        if package in seen or package in NOT_RECENT_APPS or package in hidden or not PACKAGE_NAME.fullmatch(package):
+            continue
+        seen.add(package)
+        inactive = re.search(r"inactive for (\d+)s", block)
+        recents.append({
+            "package": package,
+            "inactive": int(inactive.group(1)) if inactive else None,
+            "live": "Activities=[ActivityRecord" in block,
+        })
+        if len(recents) >= MAX_RECENTS:
+            break
+    return recents
 
 
 def find_adb() -> str | None:
@@ -179,7 +220,15 @@ class AppsManager:
         self._installed: set[str] = set()
         self._server_started = False
 
+    @staticmethod
+    def was_linked() -> bool:
+        """True once this Mac has been paired and connected; adb keeps the pairing in ~/.android."""
+        return LINKED_FILE.exists()
+
     def _set(self, status: AppsStatus, message: str = "") -> None:
+        if status == AppsStatus.READY and not LINKED_FILE.exists():
+            ensure_config_dir()
+            LINKED_FILE.touch(mode=0o600)
         if status != self.status or message != self.message:
             self.status = status
             self.message = message
@@ -354,13 +403,31 @@ class AppsManager:
         lines = resolved.strip().splitlines()
         target = lines[-1].strip() if lines else ""
         if COMPONENT.fullmatch(target):
-            (result,) = await self._shell(f"am start -n {shlex.quote(target)}")
+            # The same intent the home screen sends, so a paused app comes back where it was.
+            (result,) = await self._shell(
+                "am start -a android.intent.action.MAIN -c android.intent.category.LEANBACK_LAUNCHER "
+                f"-f 0x10200000 -n {shlex.quote(target)}")
             if result.lstrip().startswith("Starting:") and not re.search(r"^Error", result, re.MULTILINE):
                 return
         # No TV launcher entry; ask Android to start it any way it can.
         (result,) = await self._shell(f"monkey -p {shlex.quote(name)} -c android.intent.category.LAUNCHER 1")
         if not re.search(r"^Events injected: 1\b", result, re.MULTILINE):
             raise AppsError("That app has no screen to open.")
+
+    async def recents(self, hidden: frozenset[str] = frozenset()) -> list[dict]:
+        (output,) = await self._shell("dumpsys activity recents")
+        return parse_recents(output, hidden)
+
+    async def close_app(self, package: object) -> None:
+        """Stop an app and free its memory. It stays installed; opening it starts it fresh."""
+        name = check_package(package)
+        await self._shell(f"am force-stop {shlex.quote(name)}")
+
+    async def open_settings(self) -> None:
+        """The TV's main Settings in one step (the remote's Settings key does nothing on Google TV)."""
+        (result,) = await self._shell("am start -a android.settings.SETTINGS")
+        if not result.lstrip().startswith("Starting:"):
+            raise AppsError("The TV did not open Settings.")
 
     async def uninstall(self, package: object) -> None:
         name = check_package(package)

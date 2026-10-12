@@ -35,6 +35,8 @@ MAX_TEXT_LENGTH = 2000  # one paste
 MAX_MESSAGE_BYTES = 65536
 PARENT_CHECK_SECONDS = 5.0
 MAX_PHONES = 6
+APPS_RELINK_SECONDS = 60.0
+RECENTS_SETTLE_SECONDS = 1.5
 # A held voice button that never sends "voice_end" (app crashed) must not keep the TV listening.
 MAX_VOICE_SECONDS = 20.0
 VOICE_START_SECONDS = 3.0
@@ -94,6 +96,8 @@ class TVSession:
         self.phone: PhoneAccess  # set by serve()
         self.apps = AppsManager(on_status=self._apps_changed)
         self._last_apps_status = AppsStatus.UNKNOWN
+        self._relinker: asyncio.Task[None] | None = None
+        self._recents_timer: asyncio.TimerHandle | None = None
 
     # ------------------------------------------------------------ state
 
@@ -152,6 +156,28 @@ class TVSession:
             except (ConnectionError, RuntimeError):
                 clients.discard(ws)
 
+    def _app_changed(self, _app: str) -> None:
+        self._push()
+        # The order of recent apps changed; send the new list once the TV has settled.
+        if self._recents_timer:
+            self._recents_timer.cancel()
+        self._recents_timer = asyncio.get_running_loop().call_later(
+            RECENTS_SETTLE_SECONDS, lambda: self.spawn(self.push_recents()))
+
+    def recents_message(self, recents: list[dict]) -> dict[str, Any]:
+        return {"type": "recents", "apps": [dict(item, name=app_name(item["package"])) for item in recents]}
+
+    async def push_recents(self) -> None:
+        if self.apps.status != AppsStatus.READY:
+            return
+        try:
+            recents = await self.apps.recents()
+        except AppsError:
+            return
+        message = self.recents_message(recents)
+        await self._send_all(self.clients, message)
+        await self._send_all(self.phone_clients, message)
+
     async def close_phones(self) -> None:
         for ws in list(self.phone_clients):
             await ws.close(code=4403, message=b"phone access changed")
@@ -170,6 +196,7 @@ class TVSession:
         # List once when the link comes up, not on every repeat of the same state.
         if self.apps.status == AppsStatus.READY and self._last_apps_status != AppsStatus.READY:
             self.spawn(self.refresh_apps())
+            self.spawn(self.push_recents())
         self._last_apps_status = self.apps.status
 
     async def refresh_apps(self) -> None:
@@ -185,6 +212,20 @@ class TVSession:
     def start(self) -> None:
         if self._connector is None or self._connector.done():
             self._connector = asyncio.get_running_loop().create_task(self._connect_loop())
+        if self._relinker is None:
+            self._relinker = asyncio.get_running_loop().create_task(self._keep_apps_linked())
+
+    async def _keep_apps_linked(self) -> None:
+        """Wireless debugging moves to a new port on every TV restart. Once paired, follow it."""
+        while True:
+            await asyncio.sleep(APPS_RELINK_SECONDS)
+            self._relink_apps()
+
+    def _relink_apps(self) -> None:
+        idle = {AppsStatus.UNKNOWN, AppsStatus.OFF, AppsStatus.DENIED, AppsStatus.NEEDS_PAIRING}
+        if (self.status == "connected" and self.remote is not None and self.apps.status in idle
+                and AppsManager.was_linked() and not self.apps.busy()):
+            self.apps.connect(self.remote.host)
 
     async def _connect_loop(self) -> None:
         """Find and connect to the TV, retrying until it answers or needs pairing."""
@@ -220,10 +261,11 @@ class TVSession:
         self.remote.keep_reconnecting(self._on_invalid_auth)
         self._watch_field()
         self._set("connected")
+        self._relink_apps()
 
     def _watch(self, remote: AndroidTVRemote) -> None:
         remote.add_is_on_updated_callback(lambda _on: self._push())
-        remote.add_current_app_updated_callback(lambda _app: self._push())
+        remote.add_current_app_updated_callback(self._app_changed)
         remote.add_volume_info_updated_callback(lambda _vol: self._push())
         remote.add_is_available_updated_callback(self._on_available)
 
@@ -235,6 +277,7 @@ class TVSession:
             # The library made a fresh protocol object for the new connection.
             self._watch_field()
             self._set("connected")
+            self._relink_apps()  # the TV came back, likely restarted: debugging has a new port
             return
         self._set("reconnecting")
         # The library retries the old address forever; if the TV moved to a new IP, look for it again.
@@ -422,6 +465,8 @@ class TVSession:
 
     def close(self) -> None:
         self.voice_end()
+        if self._relinker:
+            self._relinker.cancel()
         self._cancel_rediscover()
         if self._connector:
             self._connector.cancel()
@@ -552,6 +597,47 @@ async def _apps_pair(session: TVSession, _ws: web.WebSocketResponse, message: di
         raise UserError(str(exc)) from None
 
 
+def _app_manager(session: TVSession) -> AppsManager:
+    session.require_connected()
+    if session.apps.status != AppsStatus.READY:
+        raise UserError("This needs the TV's app manager. Connect it in Apps first.")
+    return session.apps
+
+
+async def _recents(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    try:
+        recents = await _app_manager(session).recents()
+    except AppsError as exc:
+        raise UserError(str(exc)) from None
+    await ws.send_json(session.recents_message(recents))
+
+
+async def _resume(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    """Bring a recent app back. Phones may do this; it only reopens an app already in the list."""
+    try:
+        await _app_manager(session).launch(message.get("package"))
+    except AppsError as exc:
+        raise UserError(str(exc)) from None
+
+
+async def _close_app(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    try:
+        await _app_manager(session).close_app(message.get("package"))
+    except AppsError as exc:
+        raise UserError(str(exc)) from None
+    await session.push_recents()
+
+
+async def _open_settings(session: TVSession, _ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    session.require_connected()
+    if session.apps.status != AppsStatus.READY:
+        raise UserError("One click Settings needs the TV's app manager. Connect it in Apps first.")
+    try:
+        await session.apps.open_settings()
+    except AppsError as exc:
+        raise UserError(str(exc)) from None
+
+
 async def _apps_list(session: TVSession, _ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
     try:
         installed = await session.apps.installed()
@@ -594,6 +680,10 @@ HANDLERS: dict[str, Handler] = {
     # Installed apps over ADB: the Mac app only, never phones.
     "apps_connect": _apps_connect,
     "apps_pair": _apps_pair,
+    "open_settings": _open_settings,
+    "recents": _recents,
+    "resume": _resume,
+    "close_app": _close_app,
     "apps_list": _apps_list,
     "apps_launch": _apps_launch,
     "apps_uninstall": _apps_uninstall,
@@ -602,7 +692,7 @@ HANDLERS: dict[str, Handler] = {
 # Phones get the remote, typing and YouTube search. Pairing, voice, links, phone settings
 # and the app manager stay on the Mac.
 PHONE_HANDLERS: dict[str, Handler] = {
-    name: HANDLERS[name] for name in ("key", "edit", "app", "search")
+    name: HANDLERS[name] for name in ("key", "edit", "app", "search", "open_settings", "recents", "resume")
 }
 
 

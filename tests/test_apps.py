@@ -40,3 +40,30 @@ def test_unauthorized_legacy_tv():
     from apps import unauthorized
     assert unauthorized("failed to authenticate to 192.168.1.11:5555")
     assert not unauthorized("connected to 192.168.1.11:5555")
+
+
+def test_recents_from_a_real_chromecast():
+    from pathlib import Path
+    from apps import parse_recents
+    sample = (Path(__file__).parent / "recents_sample.txt").read_text()
+    recents = parse_recents(sample)
+    packages = [r["package"] for r in recents]
+    assert packages, "the sample has recent apps"
+    assert len(packages) == len(set(packages))  # one card per app
+    assert "com.android.systemui" not in packages and "com.google.android.apps.tv.launcherx" not in packages
+    # YouTube's task affinity is com.google.android.youtube.tv.main; the package must be the real one
+    assert all(not p.endswith(".main") for p in packages)
+    inactive = [r["inactive"] for r in recents if r["inactive"] is not None]
+    assert inactive == sorted(inactive)  # newest first
+
+
+def test_recents_details():
+    from pathlib import Path
+    from apps import parse_recents
+    recents = parse_recents((Path(__file__).parent / "recents_sample.txt").read_text())
+    assert recents == [
+        {"package": "com.google.android.youtube.tv", "inactive": 60, "live": True},
+        {"package": "com.example.player", "inactive": 600, "live": False},
+    ]
+    assert parse_recents((Path(__file__).parent / "recents_sample.txt").read_text(),
+                         frozenset({"com.example.player"}))[-1]["package"] == "com.google.android.youtube.tv"

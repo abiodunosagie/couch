@@ -56,6 +56,21 @@ private struct Envelope: Decodable {
     let `for`: String?
 }
 
+/// An app in the TV's recent list.
+struct RecentApp: Decodable, Equatable, Identifiable {
+    let package: String
+    let name: String?
+    /// Seconds since it was last in front.
+    let inactive: Int?
+    /// Still running, so it comes back where it was; otherwise it starts fresh.
+    let live: Bool
+    var id: String { package }
+}
+
+private struct RecentsMessage: Decodable {
+    let apps: [RecentApp]
+}
+
 private struct PackageMessage: Decodable {
     let package: String
 }
@@ -111,6 +126,7 @@ final class RemoteClient: ObservableObject {
     @Published private(set) var appsMessage = ""
     /// Apps the user installed on the TV, by package, once the app manager is ready.
     @Published private(set) var installedApps: [String] = []
+    @Published private(set) var recentApps: [RecentApp] = []
 
     /// Called when the link drops, before reconnecting. Lets the app restart the helper.
     var onLinkLost: (() async -> Void)?
@@ -186,6 +202,8 @@ final class RemoteClient: ObservableObject {
                     connectingApps = false
                 }
             }
+        case "recents":
+            recentApps = (try? JSONDecoder().decode(RecentsMessage.self, from: data))?.apps ?? recentApps
         case "apps_launched":
             pendingLaunchLink = nil
         case "apps_uninstalled":
@@ -230,6 +248,7 @@ final class RemoteClient: ObservableObject {
         // A restarted helper has a fresh app manager; forget the old link so pinned apps fall back to links.
         appsLink = .unknown
         installedApps = []
+        recentApps = []
         connectingApps = false
         if listening { onListeningEnded?() }
         listening = false
@@ -329,6 +348,25 @@ final class RemoteClient: ObservableObject {
         send(["type": "apps_connect"])
     }
     func refreshApps() { send(["type": "apps_list"]) }
+    func refreshRecents() { send(["type": "recents"]) }
+
+    /// Bring a recent app back to the front, where it was.
+    func resume(_ package: String) {
+        guard requireConnected() else { return }
+        send(["type": "resume", "package": package])
+    }
+
+    /// Stop an app on the TV to free memory.
+    func closeApp(_ package: String) {
+        guard requireConnected() else { return }
+        send(["type": "close_app", "package": package])
+    }
+
+    /// The TV's main Settings in one step.
+    func openSettings() {
+        guard requireConnected() else { return }
+        send(["type": "open_settings"])
+    }
     /// Pair with the TV's Wireless debugging code. `address` is the host:port the TV shows, if typed.
     func pairApps(code: String, address: String) {
         connectingApps = true

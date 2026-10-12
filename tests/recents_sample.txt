@@ -1,0 +1,19 @@
+ACTIVITY MANAGER RECENT TASKS (dumpsys activity recents)
+  * Recent #0: Task{ddefeca #100 type=home A=10047:com.google.android.apps.tv.launcherx}
+    mActivityComponent=com.google.android.apps.tv.launcherx/.home.HomeActivity
+    Activities=[ActivityRecord{1 u0 com.google.android.apps.tv.launcherx/.home.HomeActivity t100}]
+    lastActiveTime=1000 (inactive for 5s)
+  * Recent #1: Task{2a9e453 #101 type=standard A=10064:com.google.android.youtube.tv.main}
+    mActivityComponent=com.google.android.youtube.tv/com.google.android.apps.youtube.tv.activity.ShellActivity
+    Activities=[ActivityRecord{2 u0 com.google.android.youtube.tv/.ShellActivity t101}]
+    lastActiveTime=900 (inactive for 60s)
+  * Recent #2: Task{6806df3 #102 type=standard A=10043:com.android.systemui}
+    mActivityComponent=com.android.systemui/.SomeActivity
+    lastActiveTime=800 (inactive for 120s)
+  * Recent #3: Task{5ee9d21 #103 type=standard A=10065:com.example.player}
+    mActivityComponent=com.example.player/.MainActivity
+    Activities=[]
+    lastActiveTime=700 (inactive for 600s)
+  * Recent #4: Task{5ee9d22 #104 type=standard A=10066:com.example.player}
+    mActivityComponent=com.example.player/.OtherActivity
+    lastActiveTime=600 (inactive for 900s)

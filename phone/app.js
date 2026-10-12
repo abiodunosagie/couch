@@ -257,6 +257,7 @@ function closeSheet() {
 }
 
 $("open-type").addEventListener("click", () => openSheet("type"));
+$("open-settings").addEventListener("click", () => sendIfConnected({ type: "open_settings" }));
 $("open-search").addEventListener("click", () => openSheet("search"));
 $("sheet-close").addEventListener("click", closeSheet);
 $("sheet").addEventListener("click", (event) => { if (event.target === $("sheet")) closeSheet(); });

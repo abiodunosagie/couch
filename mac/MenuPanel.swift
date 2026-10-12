@@ -21,8 +21,8 @@ final class MenuPanel: NSObject, NSWindowDelegate {
     private static let chromeHeight: CGFloat = 150
     /// Extra room the typing panel takes while typing mode is on (search takes less; this covers both).
     private static let typingHeight: CGFloat = 170
-    /// The pinned apps row.
-    private static let appsHeight: CGFloat = 40
+    /// The recent apps strip and the pinned apps row.
+    private static let appsHeight: CGFloat = 95
     private static let maxScale: CGFloat = 0.8
     private static let minScale: CGFloat = 0.5
     private static let gap: CGFloat = 6
