@@ -1,28 +1,157 @@
-# Couch
+<p align="center">
+  <img src="phone/icon.png" width="112" alt="Couch app icon">
+</p>
 
-A Mac remote for Chromecast with Google TV. Lives in the menu bar (Option Command R opens it from anywhere) and as a normal window.
+<h1 align="center">Couch</h1>
 
-- `mac/` is the native app (SwiftUI and AppKit).
-- `tv.py`, `server.py` and `tvremote.py` are the helper that speaks the Android TV Remote v2 protocol through `androidtvremote2`. The app starts it on launch and stops it on quit. It listens on 127.0.0.1 only.
+<p align="center">
+  A native Mac remote for Chromecast with Google TV.<br>
+  Menu bar, keyboard, trackpad, voice, phone and automations, all over your home Wi-Fi.
+</p>
 
-## Build
+<p align="center">
+  <img src="docs/screenshots/remote.png" width="720" alt="The Couch window: a remote modelled on the Google TV voice remote, with apps, typing and shortcuts">
+</p>
 
-    ./build-app.sh
+## Why
 
-Installs `~/Applications/Couch.app`. Needs Xcode command line tools and `uv`.
+The remote that ships with the Chromecast is easy to lose and hard to type with. Couch turns the Mac you already have open into a better one. It speaks the same protocol as Google's own remote app, so nothing is installed on the TV and nothing leaves your network.
 
-## Using it
+## Features
 
-- Click the buttons, or use the keyboard: arrows, Return, Esc (back), H, Space, + and -, M, P.
-- Press `/` (or the keyboard button) to type into the text box selected on the TV. Your keyboard types straight onto the TV, Delete removes letters, Command V pastes from the Mac clipboard, Esc stops. The panel shows what the TV box says. Copying text off the TV is not possible: the TV does not offer it.
-- Hold the black mic button and speak to search the TV. The first press asks for the microphone.
+**Remote**
+- A faithful remote: direction pad, back, home, mute, YouTube, Netflix, power, input and a side volume rocker, in Snow, Sunrise or Sky.
+- Lives in the menu bar and as a window. Opens from anywhere with <kbd>⌥</kbd><kbd>⌘</kbd><kbd>R</kbd>, and starts at login if you want it to.
+- Your keyboard is the remote: arrows, Return, Esc, Space and a few letters. Two finger swipes on the trackpad move around the TV.
+- Global shortcuts for play, pause, volume, mute and power that work while any app is in front, with an on screen volume sign.
 
-## Pairing
+**Typing and voice**
+- Typing mode sends your keystrokes straight into the text box on the TV, with delete, cursor keys, paste (<kbd>⌘</kbd><kbd>V</kbd>) and clear. Couch shows what the TV box says as you type.
+- Hold the mic button and speak to search, like the Assistant button on the real remote.
+- Search YouTube from the Mac, or drop any link on the window or menu bar icon to play it on the TV.
 
-The first time, Couch asks for the 6 character code the TV shows. The client certificate lives in `~/.config/tvremote` (owner only).
+**Apps**
+- Pin your apps for one click launch, reorder them and remove them.
+- With Android debugging turned on, see every installed app, open any of them and uninstall the ones you added.
 
-## Terminal
+<p align="center">
+  <img src="docs/screenshots/apps.png" width="420" alt="The Apps manager with pinned apps and the setup steps for the full app list">
+</p>
 
-    tvremote status
-    tvremote key HOME
-    tvremote text "breaking bad"
+**Automation**
+- Sleep timer and a daily wake up time that can open an app.
+- Pauses the TV when you lock the Mac or join a call, and can resume afterwards.
+- Scenes: one click runs a list of steps, like "Movie night" (TV on, wait, open Netflix).
+- `couch://` links for Shortcuts and scripts, with a confirmation before anything reaches the TV.
+
+<p align="center">
+  <img src="docs/screenshots/automation.png" width="720" alt="The Automation tab: sleep timer, wake up, auto pause and scenes">
+</p>
+
+**Phone**
+- The same remote on any phone on your Wi-Fi. Scan a QR code from the Mac, then add it to the home screen.
+
+## How it works
+
+```
+ Couch.app (SwiftUI + AppKit)                    Chromecast with Google TV
+ ├─ window, menu bar panel, shortcuts            ┌─────────────────────────┐
+ ├─ voice capture (8 kHz PCM)                    │  Android TV Remote v2   │
+ └─ WebSocket, 127.0.0.1 only ──┐                │  (TLS, client cert)     │
+                                ▼                │                         │
+ Helper (Python, asyncio) ──────────────────────▶│  ADB, optional          │
+ ├─ androidtvremote2: keys, text, voice, links   └─────────────────────────┘
+ ├─ adb-shell: installed apps (opt in)
+ └─ phone page server, LAN, token gated ◀── phone browser
+```
+
+The Mac app draws everything natively and talks to a small helper process it starts and stops itself. The helper holds the TV connection: [androidtvremote2](https://github.com/tronikos/androidtvremote2) for the remote protocol, and [adb-shell](https://github.com/JeffLIrion/adb_shell) for the optional app manager.
+
+Two things Couch fixes on top of the library, both found against a real Chromecast with Google TV 4K and covered by tests in `tests/`:
+- Typed text is only accepted when it carries the TV's app counter and the focused field id, not the counters the library sends.
+- Each edit must name the cursor position after it, counted over the whole field in UTF-16 units, or the TV cuts the text off.
+
+## Requirements
+
+- macOS 15 or later on Apple Silicon
+- Xcode command line tools (`xcode-select --install`)
+- [uv](https://docs.astral.sh/uv/) for the Python helper
+- A Chromecast with Google TV (or another Google TV / Android TV device) on the same network
+
+## Build and run
+
+```sh
+git clone https://github.com/abiodunosagie/couch.git
+cd couch
+./build-app.sh
+open ~/Applications/Couch.app
+```
+
+`build-app.sh` checks that the helper starts, compiles the app, draws the icon and installs `Couch.app` into `~/Applications`. The app runs the helper from the cloned folder, so rebuild after moving it.
+
+## First run
+
+1. Couch finds the TV on your network and asks for the 6 character code the TV shows. That pairs this Mac once.
+2. For the full app list (optional): on the TV open **Settings › System › About**, press **Android TV OS build** seven times, then turn on **USB debugging** in **Developer options**. In Couch choose **Apps › Manage › Connect** and allow the Mac on the TV.
+3. For the phone remote (optional): open the **Phone** tab, turn it on and scan the code.
+
+## Keyboard
+
+| In Couch | | From any app | |
+| --- | --- | --- | --- |
+| Arrows | Move | <kbd>⌥</kbd><kbd>⌘</kbd><kbd>R</kbd> | Open the remote |
+| Return | Select | <kbd>⌃</kbd><kbd>⌥</kbd><kbd>Space</kbd> | Play or pause |
+| Esc | Back | <kbd>⌃</kbd><kbd>⌥</kbd><kbd>↑</kbd> / <kbd>↓</kbd> | Volume |
+| H / Space / M / P | Home / Play / Mute / Power | <kbd>⌃</kbd><kbd>⌥</kbd><kbd>M</kbd> | Mute |
+| `/` | Type on the TV | <kbd>⌃</kbd><kbd>⌥</kbd><kbd>P</kbd> | Power |
+| <kbd>⌘</kbd><kbd>F</kbd> | Search YouTube | | |
+| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>V</kbd> | Play the copied link | | |
+
+## Privacy and security
+
+- The helper listens on `127.0.0.1` only and every request carries a random token made at launch, so other apps and websites cannot drive the TV.
+- The phone page is off by default. When on, it needs a pairing token from the QR code, checks Host and Origin, never receives the text of the TV's text box, and cannot reach pairing, voice, links or the app manager. Turning it off or choosing "Forget Paired Phones" disconnects phones at once.
+- Keys and certificates live in `~/.config/tvremote`, readable only by you. Typed text and voice are never written to disk or logs.
+- The app manager runs only fixed commands with strictly checked, quoted arguments, and only uninstalls apps you installed.
+- Call detection reads whether another app is using the microphone. It records nothing.
+
+## Command line
+
+The helper doubles as a small CLI:
+
+```sh
+uv run python tvremote.py status
+uv run python tvremote.py key HOME
+uv run python tvremote.py text "breaking bad"
+uv run python tvremote.py open https://www.youtube.com
+```
+
+## Development
+
+```sh
+uv sync
+uv run pytest
+./build-app.sh
+```
+
+```
+mac/            SwiftUI and AppKit app
+server.py       helper: WebSocket API and TV session
+text_input.py   typing into TV text boxes
+apps.py         installed apps over ADB
+phone.py        phone page server
+phone/          phone page (HTML, CSS, JS)
+tv.py           discovery, pairing, shared app table
+known_apps.json app names and launch links, shared by every part
+```
+
+## Limitations
+
+- Timers and auto pause run while the Mac is awake.
+- The TV reports no volume level through this protocol, so the volume sign shows direction only.
+- Copying text off the TV is not possible.
+- Voice on the phone page needs HTTPS, so it stays on the Mac for now.
+
+## License
+
+[MIT](LICENSE)
