@@ -247,9 +247,10 @@ final class RemoteClient: ObservableObject {
     }
 
     /// Open a web link on the TV; apps that own the link (YouTube, Netflix) open it.
-    func open(_ link: String) {
-        guard requireConnected() else { return }
-        send(["type": "open", "link": link])
+    @discardableResult
+    func open(_ link: String) -> Bool {
+        guard requireConnected() else { return false }
+        return send(["type": "open", "link": link])
     }
 
     func searchYouTube(_ query: String) {
@@ -274,12 +275,13 @@ final class RemoteClient: ObservableObject {
         return false
     }
 
-    private func send(_ payload: [String: Any]) {
+    @discardableResult
+    private func send(_ payload: [String: Any]) -> Bool {
         guard let task, linkUp,
               let data = try? JSONSerialization.data(withJSONObject: payload),
               let text = String(data: data, encoding: .utf8) else {
             show("Couch is still starting. Try again in a moment.")
-            return
+            return false
         }
         task.send(.string(text)) { [weak self] error in
             guard error != nil else { return }
@@ -290,5 +292,6 @@ final class RemoteClient: ObservableObject {
                 task.cancel(with: .goingAway, reason: nil)
             }
         }
+        return true
     }
 }

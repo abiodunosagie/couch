@@ -8,6 +8,10 @@ final class TrackpadRouter {
     private var monitor: Any?
     private var pendingX: CGFloat = 0
     private var pendingY: CGFloat = 0
+    /// One direction per swipe: chosen at the first step, so a slightly diagonal swipe does not
+    /// add a sideways step at the end.
+    private var axis: Axis?
+    private enum Axis { case horizontal, vertical }
 
     /// Points of finger travel per step on the TV.
     private static let stepDistance: CGFloat = 26
@@ -27,10 +31,13 @@ final class TrackpadRouter {
 
     private func handle(_ event: NSEvent) -> Bool {
         // Trackpads and Magic Mice only; a wheel mouse scrolls as usual.
-        guard event.hasPreciseScrollingDeltas, let window = event.window, overRemote(event, in: window) else { return false }
+        // Trackpad gestures have phases; smooth scrolling mice do not and keep scrolling as usual.
+        guard event.hasPreciseScrollingDeltas, !event.phase.isEmpty || !event.momentumPhase.isEmpty,
+              let window = event.window, overRemote(event, in: window) else { return false }
         if event.phase == .began || event.phase == .mayBegin {
             pendingX = 0
             pendingY = 0
+            axis = nil
         }
         // Momentum after the fingers lift would overshoot; only real finger movement counts.
         guard event.momentumPhase.isEmpty else { return true }
@@ -39,13 +46,22 @@ final class TrackpadRouter {
         let sign: CGFloat = event.isDirectionInvertedFromDevice ? 1 : -1
         pendingX += event.scrollingDeltaX * sign
         pendingY += event.scrollingDeltaY * sign
-        while abs(pendingY) >= Self.stepDistance && abs(pendingY) >= abs(pendingX) {
-            model.client.press(pendingY > 0 ? .down : .up)
-            pendingY -= Self.stepDistance * (pendingY > 0 ? 1 : -1)
+        if axis == nil, max(abs(pendingX), abs(pendingY)) >= Self.stepDistance {
+            axis = abs(pendingX) > abs(pendingY) ? .horizontal : .vertical
         }
-        while abs(pendingX) >= Self.stepDistance && abs(pendingX) > abs(pendingY) {
-            model.client.press(pendingX > 0 ? .right : .left)
-            pendingX -= Self.stepDistance * (pendingX > 0 ? 1 : -1)
+        switch axis {
+        case .vertical:
+            while abs(pendingY) >= Self.stepDistance {
+                model.client.press(pendingY > 0 ? .down : .up)
+                pendingY -= Self.stepDistance * (pendingY > 0 ? 1 : -1)
+            }
+        case .horizontal:
+            while abs(pendingX) >= Self.stepDistance {
+                model.client.press(pendingX > 0 ? .right : .left)
+                pendingX -= Self.stepDistance * (pendingX > 0 ? 1 : -1)
+            }
+        case nil:
+            break
         }
         return true
     }
@@ -69,18 +85,35 @@ extension View {
     }
 }
 
-/// Finds its window and records the remote's frame for it.
+/// Finds its window and records the remote's frame for it; forgets it when the remote goes away.
 private struct ZoneReporter: NSViewRepresentable {
     let model: AppModel
     let frame: CGRect
+
+    final class Coordinator {
+        let model: AppModel
+        var windowNumber: Int?
+        init(model: AppModel) { self.model = model }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(model: model) }
 
     func makeNSView(context: Context) -> NSView { NSView() }
 
     func updateNSView(_ view: NSView, context: Context) {
         let frame = self.frame
+        let coordinator = context.coordinator
         DispatchQueue.main.async {
             guard let number = view.window?.windowNumber else { return }
-            if model.remoteZones[number] != frame { model.remoteZones[number] = frame }
+            coordinator.windowNumber = number
+            if coordinator.model.remoteZones[number] != frame { coordinator.model.remoteZones[number] = frame }
+        }
+    }
+
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        // The remote left this window (the pairing form replaced it): stop taking swipes there.
+        if let number = coordinator.windowNumber {
+            MainActor.assumeIsolated { coordinator.model.remoteZones[number] = nil }
         }
     }
 }

@@ -12,8 +12,9 @@ final class VolumeHUD {
     private let host: NSHostingView<HUDView>
     private var hide: DispatchWorkItem?
 
-    private static let size = NSSize(width: 168, height: 150)
+    static let size = NSSize(width: 168, height: 150)
     private static let visibleSeconds = 1.1
+    private static let fadeSeconds = 0.25
     private static let bottomMargin: CGFloat = 140
 
     init() {
@@ -35,14 +36,25 @@ final class VolumeHUD {
             panel.setFrameOrigin(NSPoint(x: area.midX - Self.size.width / 2, y: area.minY + Self.bottomMargin))
         }
         hide?.cancel()
-        panel.alphaValue = 1
+        // Replace any fade still running, so a quick second press keeps the sign up.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            panel.animator().alphaValue = 1
+        }
         panel.orderFrontRegardless()
-        let work = DispatchWorkItem { [weak self] in
-            guard let panel = self?.panel else { return }
+        var work: DispatchWorkItem!
+        work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let current = work
             NSAnimationContext.runAnimationGroup({ context in
-                context.duration = 0.25
-                panel.animator().alphaValue = 0
-            }, completionHandler: { panel.orderOut(nil) })
+                context.duration = Self.fadeSeconds
+                self.panel.animator().alphaValue = 0
+            }, completionHandler: {
+                MainActor.assumeIsolated {
+                    // Only hide if no newer press came in during the fade.
+                    if self.hide === current { self.panel.orderOut(nil) }
+                }
+            })
         }
         hide = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.visibleSeconds, execute: work)
@@ -61,7 +73,7 @@ private struct HUDView: View {
             Text(tv ?? "TV").font(.system(size: 13, weight: .semibold)).lineLimit(1)
         }
         .foregroundStyle(.primary)
-        .frame(width: 168, height: 150)
+        .frame(width: VolumeHUD.size.width, height: VolumeHUD.size.height)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 

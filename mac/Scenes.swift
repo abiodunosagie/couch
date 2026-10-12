@@ -35,6 +35,7 @@ final class Scenes: ObservableObject {
     private let automations: Automations
     private let favourites: Favourites
     private var task: Task<Void, Never>?
+    private var currentRun: UUID?
     private static let key = "scenes"
     /// Gap between steps so the TV keeps up.
     private static let stepGap: UInt64 = 400_000_000
@@ -62,6 +63,9 @@ final class Scenes: ObservableObject {
         }
         task?.cancel()
         running = scene.id
+        // A fresh id per run, so a cancelled earlier run of the same scene cannot clear this one.
+        let run = UUID()
+        currentRun = run
         task = Task { [weak self] in
             guard let self else { return }
             for step in scene.steps {
@@ -69,7 +73,7 @@ final class Scenes: ObservableObject {
                 await self.perform(step)
                 try? await Task.sleep(nanoseconds: Self.stepGap)
             }
-            if self.running == scene.id { self.running = nil }
+            if self.currentRun == run { self.running = nil }
         }
     }
 
@@ -94,12 +98,15 @@ final class Scenes: ObservableObject {
 
     private func perform(_ step: SceneStep) async {
         switch step {
-        case .turnOn: automations.turnOn()
-        case .turnOff: automations.turnOff()
+        case .turnOn: if automations.turnOn() { await automations.waitForPower(on: true) }
+        case .turnOff: if automations.turnOff() { await automations.waitForPower(on: false) }
         case .press(let key): client.press(key)
         case .openApp(let package):
-            let link = favourites.pinned.first { $0.package == package }?.link ?? Favourites.knownLinks[package]
-            if let link { client.open(link) } else { client.show("No link for \(friendlyApp(package)); add one in Apps.") }
+            if let link = favourites.link(for: package) {
+                client.open(link)
+            } else {
+                client.show("No link for \(friendlyApp(package)); add one in Apps.")
+            }
         case .wait(let seconds):
             try? await Task.sleep(nanoseconds: UInt64(min(max(seconds, 0), Self.maxWaitSeconds)) * 1_000_000_000)
         }

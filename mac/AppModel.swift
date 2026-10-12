@@ -52,7 +52,7 @@ final class AppModel: ObservableObject {
         client = RemoteClient(token: helper.token)
         voice = VoiceInput(client: client)
         favourites = Favourites(client: client)
-        automations = Automations(client: client, voice: voice, favourites: favourites)
+        automations = Automations(client: client, favourites: favourites)
         scenes = Scenes(client: client, automations: automations, favourites: favourites)
         finish = Finish(rawValue: UserDefaults.standard.string(forKey: "finish") ?? "") ?? .snow
         launchAtLogin = LoginItem.isEnabled
@@ -73,19 +73,18 @@ final class AppModel: ObservableObject {
 
     /// Send a web link to the TV: YouTube links play in the YouTube app, others open in the TV browser.
     func sendLink(_ url: URL) {
-        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+        guard url.isWebLink else {
             client.show("Only web links can go to the TV.")
             return
         }
-        client.open(url.absoluteString)
-        client.show("Sent to the TV.")
+        if client.open(url.absoluteString) { client.show("Sent to the TV.") }
     }
 
     /// Send the link on the Mac clipboard, if there is one.
     func sendClipboardLink() {
         let board = NSPasteboard.general
         let text = board.string(forType: .URL) ?? board.string(forType: .string) ?? ""
-        guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)), url.host != nil else {
+        guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)), url.isWebLink else {
             client.show("The clipboard has no web link.")
             return
         }
@@ -121,24 +120,4 @@ final class AppModel: ObservableObject {
         case .searching, .unknown: return "Looking for your TV"
         }
     }
-}
-
-private let appNames = [
-    "com.google.android.youtube.tv": "YouTube",
-    "com.google.android.youtube.tvkids": "YouTube Kids",
-    "com.netflix.ninja": "Netflix",
-    "com.amazon.amazonvideo.livingroom": "Prime Video",
-    "com.disney.disneyplus": "Disney+",
-    "com.spotify.tv.android": "Spotify",
-    "com.google.android.apps.tv.launcherx": "Home screen",
-    "com.google.android.tvlauncher": "Home screen",
-    "com.android.tv.settings": "Settings",
-    "com.neilturner.aerialviews": "Screensaver",
-    "com.apple.atve.androidtv.appletv": "Apple TV",
-]
-
-/// A readable name for the app on the TV; unknown apps show their package name.
-func friendlyApp(_ package: String?) -> String {
-    guard let package else { return "nothing yet" }
-    return appNames[package] ?? package
 }

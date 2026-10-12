@@ -68,18 +68,20 @@ struct AppsRow: View {
 
     private var addMenu: some View {
         Menu {
-            if let current = client.state.app, !favourites.isPinned(current) {
+            let current = client.state.app.flatMap { KnownApps.all[$0]?.isScreen == true ? nil : $0 }
+            let canPinCurrent = current.map { !favourites.isPinned($0) } ?? false
+            if let current, canPinCurrent {
                 Button("Pin \(favourites.defaultName(for: current)) (on now)") { favourites.pin(current) }
                 Divider()
             }
-            let others = favourites.unpinnedSeen.filter { $0 != client.state.app }
-            if others.isEmpty && (client.state.app == nil || favourites.isPinned(client.state.app!)) {
+            let others = favourites.unpinnedSeen.filter { $0 != current }
+            if others.isEmpty && !canPinCurrent {
                 Text("Open an app on the TV and it shows up here")
             }
             ForEach(others, id: \.self) { package in
                 Button(favourites.defaultName(for: package)) { favourites.pin(package) }
             }
-            let popular = Favourites.knownLinks.keys.filter { !favourites.isPinned($0) && !others.contains($0) }.sorted()
+            let popular = KnownApps.launchable.filter { !favourites.isPinned($0) && !others.contains($0) }
             if !popular.isEmpty {
                 Divider()
                 Text("Popular apps")
@@ -93,44 +95,5 @@ struct AppsRow: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Pin an app")
-    }
-}
-
-/// Search YouTube on the TV.
-struct SearchBar: View {
-    let client: RemoteClient
-    /// Focus the field as soon as it appears; it is only shown on demand, so it never takes keys meant for the remote.
-    var focusOnAppear = false
-    var onDone: () -> Void = {}
-    @State private var query = ""
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Search YouTube on the TV", text: $query)
-                .textFieldStyle(.plain)
-                .focused($focused)
-                .onSubmit(search)
-                .onExitCommand {
-                    focused = false
-                    onDone()
-                }
-            if !query.isEmpty {
-                Button("Search", action: search).controlSize(.small)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(nsColor: .textBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.secondary.opacity(0.25)))
-        .onAppear { if focusOnAppear { focused = true } }
-    }
-
-    private func search() {
-        client.searchYouTube(query)
-        query = ""
-        focused = false
-        onDone()
     }
 }

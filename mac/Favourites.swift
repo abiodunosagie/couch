@@ -23,24 +23,7 @@ final class Favourites: ObservableObject {
     private static let pinnedKey = "favouriteApps"
     private static let seenKey = "seenApps"
     private static let maxSeen = 60
-    /// Web links known to open these apps on Google TV. Others need a link from the user.
-    static let knownLinks: [String: String] = [
-        "com.google.android.youtube.tv": "https://www.youtube.com",
-        "com.google.android.youtube.tvkids": "https://www.youtubekids.com",
-        "com.netflix.ninja": "https://www.netflix.com/title",
-        "com.amazon.amazonvideo.livingroom": "https://app.primevideo.com",
-        "com.disney.disneyplus": "https://www.disneyplus.com",
-        "com.apple.atve.androidtv.appletv": "https://tv.apple.com",
-        "com.spotify.tv.android": "https://open.spotify.com",
-        "com.wbd.stream": "https://play.max.com",
-    ]
-
-    /// Screens rather than apps: the home screen, settings, voice search, the screensaver.
-    private static let notApps: Set<String> = [
-        "com.google.android.apps.tv.launcherx", "com.google.android.tvlauncher",
-        "com.android.tv.settings", "com.google.android.katniss", "com.neilturner.aerialviews",
-    ]
-
+    private static let maxLinkLength = 2000  // MAX_LINK_LENGTH in server.py
     init(client: RemoteClient) {
         let defaults = UserDefaults.standard
         if let data = defaults.data(forKey: Self.pinnedKey),
@@ -48,7 +31,7 @@ final class Favourites: ObservableObject {
             pinned = saved
         } else {
             pinned = [FavouriteApp(package: "com.google.android.youtube.tv", name: "YouTube",
-                                   link: Self.knownLinks["com.google.android.youtube.tv"])]
+                                   link: KnownApps.all["com.google.android.youtube.tv"]?.link)]
         }
         seen = defaults.stringArray(forKey: Self.seenKey) ?? []
         watch = client.$state.map(\.app).removeDuplicates().sink { [weak self] app in
@@ -61,7 +44,7 @@ final class Favourites: ObservableObject {
 
     func pin(_ package: String) {
         guard !isPinned(package) else { return }
-        pinned.append(FavouriteApp(package: package, name: defaultName(for: package), link: Self.knownLinks[package]))
+        pinned.append(FavouriteApp(package: package, name: defaultName(for: package), link: KnownApps.all[package]?.link))
         save()
     }
 
@@ -79,7 +62,7 @@ final class Favourites: ObservableObject {
         let linkText = link.trimmingCharacters(in: .whitespacesAndNewlines)
         if linkText.isEmpty {
             pinned[index].link = nil
-        } else if let url = URL(string: linkText), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil {
+        } else if linkText.count <= Self.maxLinkLength, URL(string: linkText)?.isWebLink == true {
             pinned[index].link = linkText
         } else {
             save()
@@ -92,16 +75,16 @@ final class Favourites: ObservableObject {
     /// Seen apps not pinned yet, most recent first.
     var unpinnedSeen: [String] { seen.filter { !isPinned($0) } }
 
-    func defaultName(for package: String) -> String {
-        let known = friendlyApp(package)
-        if known != package { return known }
-        // com.example.someapp.tv -> Someapp
-        let parts = package.split(separator: ".").filter { !["com", "tv", "android", "app", "atv", "google"].contains($0) }
-        return (parts.last.map(String.init) ?? package).capitalized
+    func defaultName(for package: String) -> String { friendlyApp(package) }
+
+    /// The launch link for an app: the user's own, else the known one.
+    func link(for package: String?) -> String? {
+        guard let package else { return nil }
+        return pinned.first { $0.package == package }?.link ?? KnownApps.all[package]?.link
     }
 
     private func record(_ package: String) {
-        guard !Self.notApps.contains(package) else { return }
+        guard KnownApps.all[package]?.isScreen != true else { return }
         seen.removeAll { $0 == package }
         seen.insert(package, at: 0)
         if seen.count > Self.maxSeen { seen.removeLast(seen.count - Self.maxSeen) }
