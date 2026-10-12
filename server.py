@@ -20,13 +20,14 @@ from typing import Any
 from aiohttp import WSMsgType, web
 from androidtvremote2 import AndroidTVRemote, CannotConnect, ConnectionClosed, InvalidAuth
 
+from text_input import EDIT_KEYS, FieldTrackingProtocol
 from tv import check_pairing_code, find_tv, make_remote
 
 TOKEN_HEADER = "X-Couch-Token"
 RETRY_SECONDS = 5.0
 REDISCOVER_AFTER_SECONDS = 30.0
-MAX_TEXT_LENGTH = 200
-MAX_MESSAGE_BYTES = 4096
+MAX_TEXT_LENGTH = 2000  # one paste
+MAX_MESSAGE_BYTES = 16384  # room for a 2000 character paste as JSON
 PARENT_CHECK_SECONDS = 5.0
 BAD_MESSAGE = "Bad message."
 TV_UNREACHABLE = "Can't reach the TV. Is it on and on the same Wi-Fi?"
@@ -74,6 +75,7 @@ class TVSession:
     def snapshot(self) -> dict[str, Any]:
         remote = self.remote
         volume = remote.volume_info if remote else None
+        field = self._field_protocol()
         return {
             "type": "state",
             "status": self.status,
@@ -83,6 +85,8 @@ class TVSession:
             "is_on": remote.is_on if remote else None,
             "app": remote.current_app if remote else None,
             "volume": dict(volume) if volume else None,
+            # The focused text box on the TV and its text, mirrored so the user sees what they type.
+            "field": {"active": field.field_active, "value": field.field_value} if field else None,
         }
 
     def _set(self, status: str, notice: str = "") -> None:
@@ -146,6 +150,7 @@ class TVSession:
             self._watch(self.remote)
         await self.remote.async_connect()
         self.remote.keep_reconnecting(self._on_invalid_auth)
+        self._watch_field()
         self._set("connected")
 
     def _watch(self, remote: AndroidTVRemote) -> None:
@@ -159,11 +164,24 @@ class TVSession:
             return
         self._cancel_rediscover()
         if available:
+            # The library made a fresh protocol object for the new connection.
+            self._watch_field()
             self._set("connected")
             return
         self._set("reconnecting")
         # The library retries the old address forever; if the TV moved to a new IP, look for it again.
         self._rediscover = asyncio.get_running_loop().call_later(REDISCOVER_AFTER_SECONDS, self._restart)
+
+    def _field_protocol(self) -> FieldTrackingProtocol | None:
+        # text_input.install() makes every connection a FieldTrackingProtocol; the library
+        # keeps the live one in this private attribute and has no public accessor.
+        protocol = getattr(self.remote, "_remote_message_protocol", None)
+        return protocol if isinstance(protocol, FieldTrackingProtocol) else None
+
+    def _watch_field(self) -> None:
+        protocol = self._field_protocol()
+        if protocol:
+            protocol.on_field_changed = self._push
 
     def _cancel_rediscover(self) -> None:
         if self._rediscover:
@@ -233,10 +251,21 @@ class TVSession:
             raise UserError("Unknown button.")
         self._require_connected().send_key_command(key)
 
-    def send_text(self, text: object) -> None:
-        if not isinstance(text, str) or not text or len(text) > MAX_TEXT_LENGTH:
+    def edit(self, message: dict[str, Any]) -> None:
+        """Type into the focused TV text box: insert `text`, or press an edit `key` (delete, cursor)."""
+        self._require_connected()
+        protocol = self._field_protocol()
+        if protocol is None:
+            raise UserError("Not connected to the TV right now.")
+        text, key = message.get("text"), message.get("key")
+        if key is not None:
+            if key not in EDIT_KEYS:
+                raise UserError("Unknown key.")
+            protocol.queue_edit("key", key)
+        elif isinstance(text, str) and 0 < len(text) <= MAX_TEXT_LENGTH:
+            protocol.queue_edit("text", text)
+        else:
             raise UserError(f"Text must be 1 to {MAX_TEXT_LENGTH} characters.")
-        self._require_connected().send_text(text)
 
     def launch(self, app: object) -> None:
         link = APP_LINKS.get(app) if isinstance(app, str) else None
@@ -303,6 +332,10 @@ def _sync(method: Callable[[TVSession, object], None], field: str):
     return handler
 
 
+async def _edit(app: web.Application, message: dict[str, Any]) -> None:
+    app[SESSION].edit(message)
+
+
 async def _pair_start(app: web.Application, _message: dict[str, Any]) -> None:
     await app[SESSION].start_pairing()
 
@@ -313,7 +346,7 @@ async def _pair_code(app: web.Application, message: dict[str, Any]) -> None:
 
 HANDLERS: dict[str, Callable[[web.Application, dict[str, Any]], Awaitable[None]]] = {
     "key": _sync(TVSession.send_key, "key"),
-    "text": _sync(TVSession.send_text, "text"),
+    "edit": _edit,
     "app": _sync(TVSession.launch, "app"),
     "pair_start": _pair_start,
     "pair_code": _pair_code,

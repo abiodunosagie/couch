@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import SwiftUI
 
@@ -21,10 +22,8 @@ final class AppModel: ObservableObject {
             }
         }
     }
-    /// Bumped to focus the window's "type on TV" field.
-    @Published var windowTypeRequest = 0
-    /// Whether the menu bar panel shows its "type on TV" field. Reset every time the panel closes.
-    @Published var panelTyping = false
+    /// While on, the Mac keyboard types into the TV text box instead of pressing remote buttons.
+    @Published var typing = false
     /// Size of the remote in the menu bar panel, chosen so the panel fits the screen.
     @Published var panelScale: CGFloat = 0.74
     @Published private(set) var startFailed = false
@@ -48,6 +47,22 @@ final class AppModel: ObservableObject {
     func start() async {
         startFailed = !(await helper.ensureRunning())
         client.connect()
+    }
+
+    /// Paste the Mac clipboard into the TV text box.
+    func paste() {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
+            client.show("The clipboard has no text.")
+            return
+        }
+        client.insert(text)
+    }
+
+    /// Empty the TV text box by deleting from the end.
+    func clearField() {
+        guard let field = client.state.field, field.active else { return }
+        client.edit(.lineEnd)
+        for _ in field.value { client.edit(.deleteBackward) }
     }
 
     var statusText: String {

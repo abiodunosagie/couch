@@ -10,6 +10,23 @@ enum LinkStatus: String, Decodable {
     }
 }
 
+/// The text box focused on the TV, if any, and what it currently says.
+struct TVTextField: Decodable, Equatable {
+    var active: Bool
+    var value: String
+}
+
+/// Keys that edit the TV text box. Raw values must match EDIT_KEYS in text_input.py.
+enum EditKey: String {
+    case deleteBackward = "DEL"
+    case deleteForward = "FORWARD_DEL"
+    case enter = "ENTER"
+    case left = "DPAD_LEFT"
+    case right = "DPAD_RIGHT"
+    case lineStart = "MOVE_HOME"
+    case lineEnd = "MOVE_END"
+}
+
 /// What the helper reports about the TV.
 struct TVState: Decodable, Equatable {
     var status: LinkStatus = .searching
@@ -18,9 +35,10 @@ struct TVState: Decodable, Equatable {
     var tv: String?
     var isOn: Bool?
     var app: String?
+    var field: TVTextField?
 
     enum CodingKeys: String, CodingKey {
-        case status, notice, tv, app
+        case status, notice, tv, app, field
         case noticeId = "notice_id"
         case isOn = "is_on"
     }
@@ -38,6 +56,8 @@ private struct Envelope: Decodable {
 @MainActor
 final class RemoteClient: ObservableObject {
     static let toastSeconds: UInt64 = 4
+    /// MAX_TEXT_LENGTH in server.py.
+    static let maxInsert = 2000
     private static let firstRetry: UInt64 = 500_000_000
     private static let maxRetry: UInt64 = 8_000_000_000
 
@@ -124,9 +144,15 @@ final class RemoteClient: ObservableObject {
         send(["type": "key", "key": key.rawValue])
     }
 
-    func type(_ text: String) {
+    /// Insert text at the cursor of the TV text box.
+    func insert(_ text: String) {
         guard !text.isEmpty, requireConnected() else { return }
-        send(["type": "text", "text": text])
+        send(["type": "edit", "text": String(text.prefix(Self.maxInsert))])
+    }
+
+    func edit(_ key: EditKey) {
+        guard requireConnected() else { return }
+        send(["type": "edit", "key": key.rawValue])
     }
 
     func launch(_ app: String) {

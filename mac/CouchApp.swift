@@ -176,9 +176,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let keyWindow = event.window else { return false }
         let inPanel = keyWindow === menuPanel?.window
         guard inPanel || keyWindow === window else { return false }
-        // Typing into a text field (its field editor is an NSTextView) and pressing a focused
-        // control (Tab with Full Keyboard Access) are left to AppKit.
-        if keyWindow.firstResponder is NSTextView || keyWindow.firstResponder is NSControl { return false }
+        // Typing into a real text field (the pairing code; its field editor is an NSTextView) is left to AppKit.
+        if keyWindow.firstResponder is NSTextView { return false }
+        if model.typing { return handleTyping(event) }
         guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return false }
 
         if event.keyCode == escapeKeyCode {
@@ -187,11 +187,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return true
         }
         if event.charactersIgnoringModifiers == "/" {
-            if inPanel { model.panelTyping = true } else { model.windowTypeRequest += 1 }
+            model.typing = true
             return true
         }
         guard let key = RemoteKey(event: event) else { return false }
         if !event.isARepeat || key.repeats { model.client.press(key) }
+        return true
+    }
+
+    /// Typing mode: keys edit the TV text box. Esc leaves, Command V pastes, other shortcuts work as usual.
+    private func handleTyping(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option])
+        if modifiers == .command {
+            switch event.charactersIgnoringModifiers?.lowercased() {
+            case "v":
+                model.paste()
+                return true
+            default:
+                return false  // Command W, Command Q and the rest
+            }
+        }
+        if !modifiers.isEmpty && modifiers != .option { return false }
+
+        switch event.keyCode {
+        case escapeKeyCode: model.typing = false
+        case 51: model.client.edit(.deleteBackward)  // Delete
+        case 117: model.client.edit(.deleteForward)  // Forward delete
+        case 36, 76: model.client.edit(.enter)  // Return, keypad Enter
+        case 123: model.client.edit(.left)
+        case 124: model.client.edit(.right)
+        case 115: model.client.edit(.lineStart)  // Home
+        case 119: model.client.edit(.lineEnd)  // End
+        case 126: model.client.press(.up)  // Up and Down move between fields on the TV
+        case 125: model.client.press(.down)
+        default:
+            // Option is allowed through for accented and special characters.
+            guard let text = event.characters, !text.isEmpty,
+                  text.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) && $0.value < 0xF700 })
+            else { return false }
+            model.client.insert(text)
+        }
         return true
     }
 }

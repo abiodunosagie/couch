@@ -1,42 +1,80 @@
 import SwiftUI
 
-/// Text field that types into whatever field is focused on the TV.
-struct TypeField: View {
-    let client: RemoteClient
-    /// Changing this value focuses the field.
-    var focusRequest = 0
-    /// Focus the field as soon as it appears (the menu bar panel shows it on demand).
-    var focusOnAppear = false
-    /// Called after sending or pressing Esc, so the menu bar panel can hide the field again.
-    var onDone: () -> Void = {}
+/// Typing mode: the Mac keyboard types straight into the TV text box, and this shows what
+/// the box on the TV says (the TV sends its text back after each edit).
+struct TypingPanel: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var client: RemoteClient
+    var compact = false
 
-    static let maxLength = 200  // MAX_TEXT_LENGTH in server.py
-
-    @State private var text = ""
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        HStack(spacing: 8) {
-            TextField("Type on the TV", text: $text)
-                .textFieldStyle(.roundedBorder)
-                .focused($focused)
-                .onSubmit(send)
-                .onExitCommand {
-                    focused = false
-                    onDone()
-                }
-            Button("Send", action: send)
-                .disabled(text.isEmpty)
-        }
-        .onChange(of: focusRequest) { focused = true }
-        .onAppear { if focusOnAppear { focused = true } }
+    init(model: AppModel, compact: Bool = false) {
+        self.model = model
+        self.client = model.client
+        self.compact = compact
     }
 
-    private func send() {
-        guard !text.isEmpty else { return }
-        client.type(String(text.prefix(Self.maxLength)))
-        text = ""
-        onDone()
+    private var field: TVTextField? { client.state.field }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "keyboard")
+                Text("Typing on the TV").font(.headline)
+                Spacer()
+                Button("Done") { model.typing = false }
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            mirror
+
+            HStack(spacing: 8) {
+                Button { model.paste() } label: { Label("Paste", systemImage: "doc.on.clipboard") }
+                Button { client.edit(.deleteBackward) } label: { Label("Delete", systemImage: "delete.left") }
+                Button { model.clearField() } label: { Label("Clear", systemImage: "xmark.circle") }
+                    .disabled(field?.value.isEmpty ?? true)
+            }
+            .controlSize(compact ? .small : .regular)
+
+            Text("Type, delete and paste (Command V) with your keyboard. Esc stops typing.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(compact ? 12 : 16)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.accentColor.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.accentColor.opacity(0.5)))
+    }
+
+    /// The TV text box, as the TV last reported it.
+    @ViewBuilder private var mirror: some View {
+        Group {
+            if let field, field.active {
+                (Text(field.value) + Text("|").foregroundStyle(Color.accentColor))
+                    .font(.system(size: compact ? 14 : 17, weight: .medium, design: .rounded))
+                    .lineLimit(3)
+                    .truncationMode(.head)
+            } else {
+                Text("Select a text box on the TV, then type.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: compact ? 30 : 40, alignment: .leading)
+        .padding(.horizontal, 10)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(nsColor: .textBackgroundColor)))
+        .accessibilityLabel(field?.active == true ? "TV text box: \(field?.value ?? "")" : "No text box selected on the TV")
+    }
+}
+
+/// Opens typing mode.
+struct TypeButton: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        Button { model.typing = true } label: {
+            Label("Type on the TV", systemImage: "keyboard")
+        }
+        .help("Type with your keyboard (/)")
     }
 }
 
@@ -121,6 +159,7 @@ struct FinishPicker: View {
                         .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.plain)
+                .focusable(false)
                 .help(option.label)
                 .accessibilityLabel("\(option.label) finish")
             }

@@ -17,8 +17,10 @@ final class MenuPanel: NSObject, NSWindowDelegate {
     private var lastClosed = Date.distantPast
     private var contentWatch: AnyCancellable?
 
-    /// Room taken by the header, type field, toast and padding around the remote, in points.
-    private static let chromeHeight: CGFloat = 190
+    /// Room taken by the header, toast and padding around the remote, in points.
+    private static let chromeHeight: CGFloat = 150
+    /// Extra room the typing panel takes while typing mode is on.
+    private static let typingHeight: CGFloat = 170
     private static let maxScale: CGFloat = 0.8
     private static let minScale: CGFloat = 0.5
     private static let gap: CGFloat = 6
@@ -64,8 +66,6 @@ final class MenuPanel: NSObject, NSWindowDelegate {
         guard let screen = anchor?.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
         let area = screen.visibleFrame
 
-        let fit = (area.height - Self.chromeHeight - Self.gap * 2) / RemoteView.size.height
-        model.panelScale = max(Self.minScale, min(Self.maxScale, fit))
         centerX = anchor?.frame.midX ?? area.maxX
         self.screen = screen
         place()
@@ -86,6 +86,11 @@ final class MenuPanel: NSObject, NSWindowDelegate {
     /// Size the panel to its content and pin its top under the menu bar, inside the screen.
     private func place() {
         guard let area = (screen ?? NSScreen.main)?.visibleFrame else { return }
+        // Shrink the remote while the typing panel is open so everything still fits.
+        let chrome = Self.chromeHeight + (model.typing ? Self.typingHeight : 0)
+        let fit = (area.height - chrome - Self.gap * 2) / RemoteView.size.height
+        let scale = max(Self.minScale, min(Self.maxScale, fit))
+        if abs(scale - model.panelScale) > 0.001 { model.panelScale = scale }
         host.layoutSubtreeIfNeeded()
         let size = host.fittingSize
         var x = centerX - size.width / 2
@@ -99,7 +104,7 @@ final class MenuPanel: NSObject, NSWindowDelegate {
         guard panel.isVisible else { return }
         Repeater.stopAll()
         panel.orderOut(nil)
-        model.panelTyping = false
+        model.typing = false
         lastClosed = Date()
     }
 

@@ -23,6 +23,9 @@ struct MenuPanelView: View {
                     Text(friendlyApp(client.state.app)).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button { model.typing.toggle() } label: { Image(systemName: "keyboard") }
+                    .buttonStyle(.borderless)
+                    .help("Type on the TV (/)")
                 Menu {
                     Button("Open Couch Window", action: openWindow)
                     Picker("Finish", selection: $model.finish) {
@@ -41,13 +44,13 @@ struct MenuPanelView: View {
             if client.state.needsPairing {
                 PairingForm(client: client)
             } else {
-                RemoteView(client: client, finish: model.finish) { model.panelTyping = true }
+                if model.typing {
+                    TypingPanel(model: model, compact: true)
+                }
+                RemoteView(client: client, finish: model.finish) { model.typing = true }
                     .scaleEffect(model.panelScale)
                     .frame(width: RemoteView.size.width * model.panelScale,
                            height: RemoteView.size.height * model.panelScale)
-                if model.panelTyping {
-                    TypeField(client: client, focusOnAppear: true) { model.panelTyping = false }
-                }
             }
 
             if let toast = client.toast {

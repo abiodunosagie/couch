@@ -12,7 +12,7 @@ struct MainWindowView: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 56) {
-            RemoteView(client: client, finish: model.finish) { model.windowTypeRequest += 1 }
+            RemoteView(client: client, finish: model.finish) { model.typing = true }
                 .padding(.vertical, 36)
 
             VStack(alignment: .leading, spacing: 26) {
@@ -27,8 +27,10 @@ struct MainWindowView: View {
 
                 if client.state.needsPairing {
                     PairingForm(client: client)
+                } else if model.typing {
+                    TypingPanel(model: model)
                 } else {
-                    TypeField(client: client, focusRequest: model.windowTypeRequest)
+                    TypeButton(model: model)
                 }
 
                 Text(client.toast ?? " ")
