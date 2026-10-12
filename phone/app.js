@@ -49,15 +49,17 @@ const token = readToken();
 function connect() {
   clearTimeout(retryTimer);
   if (!token) { showGate(); return; }
-  if (socket && socket.readyState <= WebSocket.OPEN) return;
-  socket = new WebSocket(`ws://${location.host}/ws?t=${encodeURIComponent(token)}`);
-  socket.addEventListener("message", (event) => {
+  if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) return;
+  const ws = new WebSocket(`ws://${location.host}/ws?t=${encodeURIComponent(token)}`);
+  socket = ws;
+  ws.addEventListener("message", (event) => {
     let message;
     try { message = JSON.parse(event.data); } catch { return; }
     if (message.type === "state") render(message);
     else if (message.type === "error") toast(message.message);
   });
-  socket.addEventListener("close", async () => {
+  ws.addEventListener("close", async () => {
+    if (socket !== ws) return;  // an older socket closing after a newer one opened
     socket = null;
     render({ ...state, status: "searching" });
     $("status").textContent = "Mac not reachable, retrying";
@@ -121,9 +123,9 @@ function renderMirror() {
   if (sheetMode !== "type") return;
   const field = state.field;
   mirror.classList.toggle("live", Boolean(field && field.active));
-  // The phone is never sent the text itself (it can be a password), only its length.
+  // The phone is never sent the TV text itself: it can be a password.
   mirror.textContent = field && field.active
-    ? (field.length ? `The TV box has ${field.length} character${field.length === 1 ? "" : "s"}.` : "The TV box is empty.")
+    ? "A text box is open on the TV. What you send goes in at the cursor."
     : "Select a text box on the TV first.";
 }
 

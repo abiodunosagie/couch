@@ -58,12 +58,19 @@ for _key in EDIT_KEYS:
         raise ImportError(f"androidtvremote2 has no KEYCODE_{_key}")
 
 
-def _cursor(status) -> int | None:
-    """The cursor from a text field status. Proto3 drops zero values, so 0/0 on text that is
-    not empty means "not reported" rather than "at the start"."""
-    if status.start == 0 and status.end == 0 and status.value:
-        return None
-    return status.end
+def u16(text: str) -> int:
+    """Length in UTF-16 code units, which is how the TV counts cursor positions."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _index(text: str, position: int) -> int:
+    """The string index at a UTF-16 position, clamped to the text."""
+    units = 0
+    for index, char in enumerate(text):
+        if units >= position:
+            return index
+        units += u16(char)
+    return len(text)
 
 
 @dataclass
@@ -76,19 +83,28 @@ class _Key:
     name: str
 
 
+@dataclass
+class _Clear:
+    """Delete everything; counted when it runs, so text typed just before is included."""
+
+
 class FieldTrackingProtocol(RemoteProtocol):
-    """RemoteProtocol that remembers the focused text field and types into it in order."""
+    """RemoteProtocol that remembers the focused text field and types into it in order.
+
+    Couch keeps its own copy of the field text and cursor, updated as each edit goes out,
+    because the TV does not answer every key edit. Each insert names the cursor position
+    after it, counted over the whole field in UTF-16 units: the TV cuts the field off there.
+    When the TV does report the field, its report wins.
+    """
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.text_field_id = 0
         self.app_counter = 0
         self.field_value = ""
-        # Cursor in the field as the TV last reported it. An insert must name the cursor position
-        # after it, counted over the whole field: the TV cuts the field off at that position.
-        self.cursor = 0
+        self.cursor = 0  # UTF-16 units
         self.on_field_changed: Callable[[], None] | None = None
-        self._edits: deque[_Insert | _Key] = deque()
+        self._edits: deque[_Insert | _Key | _Clear] = deque()
         self._id_moved = asyncio.Event()
         self._pump: asyncio.Task[None] | None = None
 
@@ -110,18 +126,24 @@ class FieldTrackingProtocol(RemoteProtocol):
                 # Focus moved: to a text field (it has a status) or away from one (it has none).
                 if inject.HasField("text_field_status"):
                     status = inject.text_field_status
-                    self._field_update(status.counter_field, status.value, _cursor(status))
+                    self._field_update(status.counter_field, status.value, self._reported_cursor(status))
                 else:
                     self._field_update(0, "", 0)
             elif msg.HasField("remote_ime_show_request"):
                 status = msg.remote_ime_show_request.remote_text_field_status
-                self._field_update(status.counter_field, status.value, _cursor(status))
+                self._field_update(status.counter_field, status.value, self._reported_cursor(status))
         super()._handle_message(raw_msg)
+
+    def _reported_cursor(self, status) -> int | None:
+        """The TV's cursor. Proto3 drops zeros, so 0/0 on text that is not empty is either "at the
+        start" or "not sent"; keep Couch's own position when it is at the start, else take the end."""
+        if status.start == 0 and status.end == 0 and status.value:
+            return 0 if self.cursor == 0 else None
+        return status.end
 
     def _field_update(self, field_id: int, value: str, cursor: int | None) -> None:
         changed = (field_id != 0) != self.field_active or value != self.field_value
-        # No cursor reported: assume the end of the text, where typing normally happens.
-        self.cursor = min(cursor, len(value)) if cursor is not None else len(value)
+        self.cursor = min(cursor, u16(value)) if cursor is not None else u16(value)
         if field_id != self.text_field_id:
             self._id_moved.set()
         self.text_field_id = field_id
@@ -156,9 +178,10 @@ class FieldTrackingProtocol(RemoteProtocol):
         return True
 
     def queue_clear(self) -> None:
-        """Empty the field: jump to the end, then delete everything the TV last reported."""
-        self._edits.append(_Key("MOVE_END"))
-        self._edits.extend(_Key("DEL") for _ in range(min(len(self.field_value), MAX_CLEAR)))
+        """Empty the field. A second Clear while one waits does nothing."""
+        if any(isinstance(edit, _Clear) for edit in self._edits):
+            return
+        self._edits.append(_Clear())
         self._run()
 
     def _run(self) -> None:
@@ -170,15 +193,43 @@ class FieldTrackingProtocol(RemoteProtocol):
             edit = self._edits.popleft()
             self._reset_idle_disconnect_task()
             if isinstance(edit, _Key):
-                self.send_key_command(f"KEYCODE_{edit.name}")
-                await asyncio.sleep(KEY_GAP_SECONDS)
+                await self._key(edit.name)
+            elif isinstance(edit, _Clear):
+                await self._key("MOVE_END")
+                for _ in range(min(len(self.field_value), MAX_CLEAR)):
+                    await self._key("DEL")
             else:
                 await self._insert(edit.text)
+
+    async def _key(self, name: str) -> None:
+        self.send_key_command(f"KEYCODE_{name}")
+        self._apply_key(name)
+        await asyncio.sleep(KEY_GAP_SECONDS)
+
+    def _apply_key(self, name: str) -> None:
+        """Mirror a key edit locally, since the TV may not report it."""
+        value, at = self.field_value, _index(self.field_value, self.cursor)
+        if name == "DEL" and at > 0:
+            self.field_value = value[:at - 1] + value[at:]
+            self.cursor -= u16(value[at - 1])
+        elif name == "FORWARD_DEL" and at < len(value):
+            self.field_value = value[:at] + value[at + 1:]
+        elif name == "DPAD_LEFT" and at > 0:
+            self.cursor -= u16(value[at - 1])
+        elif name == "DPAD_RIGHT" and at < len(value):
+            self.cursor += u16(value[at])
+        elif name == "MOVE_HOME":
+            self.cursor = 0
+        elif name == "MOVE_END":
+            self.cursor = u16(value)
 
     async def _insert(self, text: str) -> None:
         sent_with = self.text_field_id
         self._id_moved.clear()
         self._send_insert(text)
+        at = _index(self.field_value, self.cursor)
+        self.field_value = self.field_value[:at] + text + self.field_value[at:]
+        self.cursor += u16(text)
         # Only an echo that moves the id on belongs to this insert; an older echo does not.
         try:
             await asyncio.wait_for(self._wait_for_new_id(sent_with), ECHO_TIMEOUT_SECONDS)
@@ -192,7 +243,7 @@ class FieldTrackingProtocol(RemoteProtocol):
 
     def _send_insert(self, text: str) -> None:
         msg = RemoteMessage()
-        after = self.cursor + len(text)
+        after = self.cursor + u16(text)
         field = RemoteImeObject(start=after, end=after, value=text)
         msg.remote_ime_batch_edit.CopyFrom(
             RemoteImeBatchEdit(

@@ -56,6 +56,10 @@ private struct Envelope: Decodable {
     let `for`: String?
 }
 
+private struct PackageMessage: Decodable {
+    let package: String
+}
+
 private struct VoiceMessage: Decodable {
     let listening: Bool
 }
@@ -100,6 +104,10 @@ final class RemoteClient: ObservableObject {
 
     /// Called when the link drops, before reconnecting. Lets the app restart the helper.
     var onLinkLost: (() async -> Void)?
+    /// Called when the TV confirms an app was uninstalled.
+    var onUninstalled: ((String) -> Void)?
+    /// Called when a Connect attempt for the app manager ends without a link.
+    var onAppsConnectFailed: ((AppsLink) -> Void)?
     /// Called when the TV stops taking voice (released, timed out, or the TV dropped).
     var onListeningEnded: (() -> Void)?
 
@@ -108,6 +116,8 @@ final class RemoteClient: ObservableObject {
     private var toastClear: Task<Void, Never>?
     private var retryDelay = RemoteClient.firstRetry
     private var pendingLaunchLink: String?
+    /// A Connect the user asked for, so its failure can be explained.
+    private var connectingApps = false
     /// Microphone audio recorded before the TV starts listening.
     private var heldAudio = Data()
     private var voiceRequested = false
@@ -155,8 +165,21 @@ final class RemoteClient: ObservableObject {
             state = next
         case "apps":
             if let message = try? JSONDecoder().decode(AppsMessage.self, from: data) {
+                let previous = appsLink
                 appsLink = message.status
                 if let installed = message.installed { installedApps = installed }
+                if connectingApps, message.status == .off || message.status == .denied {
+                    connectingApps = false
+                    onAppsConnectFailed?(message.status)
+                } else if message.status == .ready || (previous == .waiting && message.status != .waiting) {
+                    connectingApps = false
+                }
+            }
+        case "apps_launched":
+            pendingLaunchLink = nil
+        case "apps_uninstalled":
+            if let package = try? JSONDecoder().decode(PackageMessage.self, from: data).package {
+                onUninstalled?(package)
             }
         case "phone":
             phone = try? JSONDecoder().decode(PhoneInfo.self, from: data)
@@ -289,7 +312,10 @@ final class RemoteClient: ObservableObject {
 
     // MARK: installed apps (ADB)
 
-    func connectApps() { send(["type": "apps_connect"]) }
+    func connectApps() {
+        connectingApps = true
+        send(["type": "apps_connect"])
+    }
     func refreshApps() { send(["type": "apps_list"]) }
     /// Open an app through the TV's app manager. `fallbackLink` opens instead if that fails.
     func launchApp(_ package: String, fallbackLink: String? = nil) {

@@ -49,9 +49,7 @@ final class AppModel: ObservableObject {
     @Published var unavailableShortcuts: [String] = []
 
     private var linkWatch: AnyCancellable?
-    private var installedWatch: AnyCancellable?
-    /// Apps asked to be uninstalled; unpinned only once the TV's list no longer has them.
-    private var uninstalling: Set<String> = []
+
 
     init() {
         client = RemoteClient(token: helper.token)
@@ -66,26 +64,24 @@ final class AppModel: ObservableObject {
             self.startFailed = !(await self.helper.ensureRunning())
         }
         // A slow first start can time out and then succeed; clear the error once the link is up.
-        installedWatch = client.$installedApps.dropFirst().sink { [weak self] installed in
-            MainActor.assumeIsolated {
-                guard let self, !installed.isEmpty || self.client.appsLink == .ready else { return }
-                for package in self.uninstalling where !installed.contains(package) {
-                    self.favourites.unpin(package)
-                    self.favourites.forget(package)
-                    self.client.show("\(friendlyApp(package)) was removed from the TV.")
-                }
-                // Still listed means the TV refused (its error toast already showed); either way this request is done.
-                self.uninstalling.removeAll()
-            }
+        client.onUninstalled = { [weak self] package in
+            guard let self else { return }
+            self.favourites.unpin(package)
+            self.favourites.forget(package)
+            self.client.show("\(friendlyApp(package)) was removed from the TV.")
+        }
+        client.onAppsConnectFailed = { [weak self] status in
+            self?.client.show(status == .denied
+                ? "The TV did not allow Couch. Choose Connect again and pick Allow on the TV."
+                : "Couch could not find debugging on the TV. See the steps in Apps.")
         }
         linkWatch = client.$linkUp.sink { [weak self] up in
             if up { MainActor.assumeIsolated { self?.startFailed = false } }
         }
     }
 
-    /// Uninstall from the TV. The pin goes only after the TV confirms, so a failed removal keeps it.
+    /// Uninstall from the TV. The pin goes only when the TV confirms (onUninstalled).
     func uninstall(_ package: String) {
-        uninstalling.insert(package)
         client.uninstallApp(package)
     }
 

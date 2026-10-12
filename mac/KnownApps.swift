@@ -15,17 +15,38 @@ enum KnownApps {
     static let youtube = "com.google.android.youtube.tv"
     static let netflix = "com.netflix.ninja"
 
-    static let all: [String: Entry] = {
-        guard let url = Bundle.main.url(forResource: "known_apps", withExtension: "json"),
-              let data = try? Data(contentsOf: url),
-              let table = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
-        var entries: [String: Entry] = [:]
-        for (package, value) in table where !package.hasPrefix("_") {
-            guard let json = try? JSONSerialization.data(withJSONObject: value),
-                  let entry = try? JSONDecoder().decode(Entry.self, from: json) else { continue }
-            entries[package] = entry
+    /// Entries keyed by package; keys starting with "_" are comments in the file.
+    private struct Table: Decodable {
+        let entries: [String: Entry]
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: AnyKey.self)
+            var entries: [String: Entry] = [:]
+            for key in container.allKeys where !key.stringValue.hasPrefix("_") {
+                entries[key.stringValue] = try container.decode(Entry.self, forKey: key)
+            }
+            self.entries = entries
         }
-        return entries
+    }
+
+    private struct AnyKey: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+
+    static let all: [String: Entry] = {
+        do {
+            guard let url = Bundle.main.url(forResource: "known_apps", withExtension: "json") else {
+                NSLog("Couch: known_apps.json is missing from the app bundle")
+                return [:]
+            }
+            return try JSONDecoder().decode(Table.self, from: Data(contentsOf: url)).entries
+        } catch {
+            NSLog("Couch: could not read known_apps.json: \(error)")
+            return [:]
+        }
     }()
 
     /// Known apps with a launch link, for the "Popular apps" menu.

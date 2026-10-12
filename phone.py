@@ -31,6 +31,7 @@ SETTINGS_FILE = CONFIG_DIR / "phone.json"
 TOKEN_BYTES = 24
 # The LAN address is looked up again after this long, in case the Mac moved networks.
 ADDRESS_CACHE_SECONDS = 30
+SHUTDOWN_SECONDS = 2.0
 
 log = logging.getLogger("tvremote.phone")
 
@@ -52,8 +53,9 @@ def lan_address() -> str | None:
 class PhoneAccess:
     """Turns the phone server on and off and owns its pairing token."""
 
-    def __init__(self, run_socket: SocketRunner) -> None:
+    def __init__(self, run_socket: SocketRunner, close_phones: Callable[[], Awaitable[None]]) -> None:
         self._run_socket = run_socket
+        self._close_phones = close_phones
         self._runner: web.AppRunner | None = None
         self._address: str | None = None
         self._address_checked = 0.0
@@ -74,6 +76,7 @@ class PhoneAccess:
     def _save(self) -> None:
         ensure_config_dir()
         fd = os.open(SETTINGS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)  # also tighten a file left by an older version
         with os.fdopen(fd, "w") as out:
             json.dump({"enabled": self.enabled, "token": self.token}, out)
 
@@ -117,7 +120,7 @@ class PhoneAccess:
         app.router.add_get("/icon.png", self._page("icon.png", "image/png"))
         app.router.add_get("/ws", self._socket)
         app.router.add_get("/check", self._check)
-        runner = web.AppRunner(app, access_log=None)
+        runner = web.AppRunner(app, access_log=None, shutdown_timeout=SHUTDOWN_SECONDS)
         await runner.setup()
         try:
             # All interfaces, so a changed Wi-Fi address keeps working; the Host check and token gate it.
@@ -130,6 +133,9 @@ class PhoneAccess:
         log.info("phone remote on port %s", PHONE_PORT)
 
     async def stop(self) -> None:
+        # Close open phone pages first: a revoked phone must lose control now, and cleanup()
+        # would otherwise wait for each open socket to end by itself.
+        await self._close_phones()
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
@@ -177,7 +183,7 @@ class PhoneAccess:
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; connect-src 'self' ws:; img-src 'self'; frame-ancestors 'none'")
+            "default-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'")
 
     def _page(self, name: str, content_type: str):
         path = PAGE_DIR / name

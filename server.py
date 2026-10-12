@@ -25,7 +25,7 @@ from androidtvremote2.remote import VOICE_CHUNK_MIN_SIZE
 from apps import AppsError, AppsManager, AppsStatus
 from phone import PhoneAccess
 from text_input import EDIT_KEYS, NAVIGATION_KEYS, FieldTrackingProtocol
-from tv import app_name, check_pairing_code, find_tv, make_remote
+from tv import KNOWN_APPS, app_name, check_pairing_code, find_tv, make_remote
 
 TOKEN_HEADER = "X-Couch-Token"
 RETRY_SECONDS = 5.0
@@ -50,9 +50,10 @@ ALLOWED_KEYS = frozenset({
     # Explicit pause and play, so automations never resume when they meant to pause.
     "MEDIA_PAUSE", "MEDIA_PLAY",
 })
+# Short ids the YouTube and Netflix buttons send, mapped to links from known_apps.json.
 APP_LINKS = {
-    "youtube": "https://www.youtube.com",
-    "netflix": "https://www.netflix.com/title",
+    "youtube": KNOWN_APPS["com.google.android.youtube.tv"]["link"],
+    "netflix": KNOWN_APPS["com.netflix.ninja"]["link"],
 }
 
 MAX_LINK_LENGTH = 2000
@@ -92,6 +93,7 @@ class TVSession:
         self._voice_timeout: asyncio.TimerHandle | None = None
         self.phone: PhoneAccess  # set by serve()
         self.apps = AppsManager(on_status=self._apps_changed)
+        self._last_apps_status = AppsStatus.UNKNOWN
 
     # ------------------------------------------------------------ state
 
@@ -102,8 +104,8 @@ class TVSession:
         if field is None:
             field_state = None
         elif for_phone:
-            # Phones see that a box is open and how long its text is, never the text: it can be a password.
-            field_state = {"active": field.field_active, "value": "", "length": len(field.field_value)}
+            # Phones see that a box is open, never its text or length: it can be a password.
+            field_state = {"active": field.field_active, "value": ""}
         else:
             # The Mac mirrors the TV text box so the user sees what they type.
             field_state = {"active": field.field_active, "value": field.field_value}
@@ -150,6 +152,11 @@ class TVSession:
             except (ConnectionError, RuntimeError):
                 clients.discard(ws)
 
+    async def close_phones(self) -> None:
+        for ws in list(self.phone_clients):
+            await ws.close(code=4403, message=b"phone access changed")
+        self.phone_clients.clear()
+
     # ------------------------------------------------------------ installed apps
 
     def apps_message(self, installed: list[str] | None = None) -> dict[str, Any]:
@@ -160,8 +167,10 @@ class TVSession:
 
     def _apps_changed(self) -> None:
         self.spawn(self.broadcast(self.apps_message()))
-        if self.apps.status == AppsStatus.READY:
+        # List once when the link comes up, not on every repeat of the same state.
+        if self.apps.status == AppsStatus.READY and self._last_apps_status != AppsStatus.READY:
             self.spawn(self.refresh_apps())
+        self._last_apps_status = self.apps.status
 
     async def refresh_apps(self) -> None:
         """Send the Mac the list of installed apps. Errors become a status change, already sent."""
@@ -544,12 +553,13 @@ async def _apps_list(session: TVSession, _ws: web.WebSocketResponse, _message: d
     await session.broadcast(session.apps_message(installed))
 
 
-async def _apps_launch(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+async def _apps_launch(session: TVSession, ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
     session.require_connected()
     try:
         await session.apps.launch(message.get("package"))
     except AppsError as exc:
         raise UserError(str(exc)) from None
+    await ws.send_json({"type": "apps_launched", "package": message.get("package")})
 
 
 async def _apps_uninstall(session: TVSession, ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
@@ -557,6 +567,7 @@ async def _apps_uninstall(session: TVSession, ws: web.WebSocketResponse, message
         await session.apps.uninstall(message.get("package"))
     except AppsError as exc:
         raise UserError(str(exc)) from None
+    await ws.send_json({"type": "apps_uninstalled", "package": message.get("package")})
     await _apps_list(session, ws, {})
 
 
@@ -629,7 +640,7 @@ async def serve(port: int, host: str | None, name: str | None, parent_pid: int |
     # zeroconf logs a full traceback for every interface without a route (VPN, Thunderbolt bridge).
     logging.getLogger("zeroconf").setLevel(logging.ERROR)
     session = TVSession(host, name)
-    session.phone = PhoneAccess(lambda request: run_socket(request, session, phone=True))
+    session.phone = PhoneAccess(lambda request: run_socket(request, session, phone=True), session.close_phones)
     shutdown = asyncio.Event()
     app = web.Application(middlewares=[local_only])
     app[SESSION] = session

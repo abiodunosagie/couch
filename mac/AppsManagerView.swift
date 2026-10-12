@@ -82,7 +82,7 @@ struct AppsManagerView: View {
         .onExitCommand(perform: close)
         .onAppear {
             switch client.appsLink {
-            case .ready: client.refreshApps()
+            case .ready: if client.installedApps.isEmpty { client.refreshApps() }
             // Never re-prompt on the TV by itself after a refusal or while a prompt is up.
             case .denied, .waiting: break
             case .off, .unknown: client.connectApps()

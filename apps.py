@@ -74,7 +74,8 @@ def _parse_packages(output: str) -> list[str]:
 
 def _signer() -> CryptographySigner:
     ensure_config_dir()
-    if not KEY_FILE.exists():
+    # An empty key is a key generation that was cut off; make a new one.
+    if not KEY_FILE.exists() or KEY_FILE.stat().st_size == 0:
         # Create both files owner-only first; keygen then writes into them and keeps the mode.
         for path in (KEY_FILE, PUBLIC_KEY_FILE):
             os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
@@ -138,6 +139,8 @@ class AppsManager:
                 self._safe_close(device)
                 return AppsStatus.OFF
             self._device = device
+            if host != self._host:
+                self._installed = set()  # a different TV: its list is unknown until listed
             self._host = host
             return AppsStatus.READY
 
@@ -194,7 +197,9 @@ class AppsManager:
         try:
             return await asyncio.to_thread(run)
         except AppsError:
-            self._set(AppsStatus.UNKNOWN)
+            # Not connected: only a link that was up is now down; "off" and "denied" stay as they are.
+            if self.status == AppsStatus.READY:
+                self._set(AppsStatus.UNKNOWN)
             raise
         except Exception as exc:
             log.info("adb command failed: %r", exc)
@@ -217,11 +222,11 @@ class AppsManager:
         target = lines[-1].strip() if lines else ""
         if COMPONENT.fullmatch(target):
             (result,) = await self._shell(f"am start -n {shlex.quote(target)}")
-            if "Error" not in result:
+            if result.lstrip().startswith("Starting:") and not re.search(r"^Error", result, re.MULTILINE):
                 return
         # No TV launcher entry; ask Android to start it any way it can.
         (result,) = await self._shell(f"monkey -p {shlex.quote(name)} -c android.intent.category.LAUNCHER 1")
-        if "No activities found" in result or "aborted" in result:
+        if not re.search(r"^Events injected: 1\b", result, re.MULTILINE):
             raise AppsError("That app has no screen to open.")
 
     async def uninstall(self, package: object) -> None:
