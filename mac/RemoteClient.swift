@@ -66,11 +66,19 @@ private struct VoiceMessage: Decodable {
 
 /// The TV's app manager (Android debugging) as the helper reports it.
 enum AppsLink: String, Decodable {
-    case unknown, off, waiting, ready, denied
+    case unknown, off, waiting, ready, denied, pairing
+    case noAdb = "no_adb"
+    case needsPairing = "needs_pairing"
+
+    /// A state this app does not know yet reads as unknown, so the message is not dropped.
+    init(from decoder: Decoder) throws {
+        self = AppsLink(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown
+    }
 }
 
 private struct AppsMessage: Decodable {
     let status: AppsLink
+    let message: String?
     let installed: [String]?
 }
 
@@ -99,6 +107,8 @@ final class RemoteClient: ObservableObject {
     @Published private(set) var listening = false
     @Published private(set) var phone: PhoneInfo?
     @Published private(set) var appsLink: AppsLink = .unknown
+    /// Why the last connect or pairing failed, from the helper.
+    @Published private(set) var appsMessage = ""
     /// Apps the user installed on the TV, by package, once the app manager is ready.
     @Published private(set) var installedApps: [String] = []
 
@@ -167,8 +177,9 @@ final class RemoteClient: ObservableObject {
             if let message = try? JSONDecoder().decode(AppsMessage.self, from: data) {
                 let previous = appsLink
                 appsLink = message.status
+                appsMessage = message.message ?? ""
                 if let installed = message.installed { installedApps = installed }
-                if connectingApps, message.status == .off || message.status == .denied {
+                if connectingApps, [.off, .denied, .noAdb, .needsPairing].contains(message.status) {
                     connectingApps = false
                     onAppsConnectFailed?(message.status)
                 } else if message.status == .ready || (previous == .waiting && message.status != .waiting) {
@@ -317,6 +328,11 @@ final class RemoteClient: ObservableObject {
         send(["type": "apps_connect"])
     }
     func refreshApps() { send(["type": "apps_list"]) }
+    /// Pair with the TV's Wireless debugging code. `address` is the host:port the TV shows, if typed.
+    func pairApps(code: String, address: String) {
+        connectingApps = true
+        send(["type": "apps_pair", "code": code, "address": address])
+    }
     /// Open an app through the TV's app manager. `fallbackLink` opens instead if that fails.
     func launchApp(_ package: String, fallbackLink: String? = nil) {
         guard requireConnected() else { return }

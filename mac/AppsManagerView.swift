@@ -13,6 +13,7 @@ struct AppsManagerView: View {
     @State private var editing: FavouriteApp?
     @State private var newName = ""
     @State private var newLink = ""
+    @State private var showPairing = false
 
     init(model: AppModel, close: @escaping () -> Void) {
         self.model = model
@@ -77,14 +78,22 @@ struct AppsManagerView: View {
                 }
             }
             .listStyle(.inset(alternatesRowBackgrounds: true))
+            .sheet(isPresented: $showPairing) {
+                PairingSteps(client: client).padding(20).frame(width: 440)
+                    .overlay(alignment: .topTrailing) {
+                        Button("Close") { showPairing = false }.padding(12)
+                    }
+            }
         }
         .frame(width: Self.size.width, height: Self.size.height)
         .onExitCommand(perform: close)
+        // Opened before the helper link was up: the first Connect was lost, so ask again once it is.
+        .onChange(of: client.linkUp) { if client.linkUp && client.appsLink == .unknown { client.connectApps() } }
         .onAppear {
             switch client.appsLink {
             case .ready: if client.installedApps.isEmpty { client.refreshApps() }
-            // Never re-prompt on the TV by itself after a refusal or while a prompt is up.
-            case .denied, .waiting: break
+            // Never re-prompt on the TV by itself after a refusal, while a prompt is up, or while pairing.
+            case .denied, .waiting, .pairing, .needsPairing, .noAdb: break
             case .off, .unknown: client.connectApps()
             }
         }
@@ -187,9 +196,27 @@ struct AppsManagerView: View {
             }
         case .denied:
             VStack(alignment: .leading, spacing: 8) {
-                Text("The TV did not allow Couch, or nobody answered in time.")
-                Button("Try Again") { client.connectApps() }
+                Text(client.appsMessage.isEmpty ? "The TV did not allow Couch, or nobody answered in time." : client.appsMessage)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button("Try Again") { client.connectApps() }
+                    Button("Pair with a Code") { showPairing = true }
+                }
             }
+        case .needsPairing:
+            PairingSteps(client: client)
+        case .pairing:
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("Pairing with the TV…")
+            }
+        case .noAdb:
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Couch uses Google's adb tool to manage apps. Install it once in Terminal:")
+                Text("brew install --cask android-platform-tools").font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                Button("Check Again") { client.connectApps() }
+            }
+            .font(.callout)
         case .off, .unknown:
             DebuggingSteps { client.connectApps() }
         }
@@ -207,8 +234,8 @@ private struct DebuggingSteps: View {
     let connect: () -> Void
     private static let steps = [
         "Settings › System › About: press “Android TV OS build” 7 times.",
-        "Settings › System › Developer options: turn on USB debugging.",
-        "Come back here and choose Connect. On the TV, tick “Always allow from this computer” and choose Allow.",
+        "Settings › System › Developer options: turn on USB debugging, and Wireless debugging if it is there.",
+        "Come back here and choose Connect. Couch asks for a pairing code, or the TV asks you to allow this Mac.",
     ]
 
     var body: some View {
@@ -221,5 +248,52 @@ private struct DebuggingSteps: View {
             Button("Connect", action: connect).padding(.top, 2)
         }
         .font(.callout)
+    }
+}
+
+/// Wireless debugging: pair once with the 6 digit code the TV shows.
+private struct PairingSteps: View {
+    @ObservedObject var client: RemoteClient
+    @State private var code = ""
+    @State private var address = ""
+    @FocusState private var codeFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Pair Couch with the TV once").font(.headline)
+            Text("1. On the TV open Settings › System › Developer options › Wireless debugging.")
+            Text("2. Choose “Pair device with pairing code” and leave that screen open.")
+            Text("3. Type the 6 digit code it shows:")
+            HStack(spacing: 8) {
+                TextField("123456", text: $code)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 17, weight: .medium, design: .monospaced))
+                    .frame(width: 120)
+                    .focused($codeFocused)
+                    .onChange(of: code) { code = String(code.filter(\.isNumber).prefix(6)) }
+                    .onSubmit(pair)
+                Button("Pair", action: pair)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(code.count != 6)
+            }
+            DisclosureGroup("Couch cannot find the TV?") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Type the IP address and port shown under the code, like 192.168.1.11:37000.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TextField("IP address and port", text: $address).textFieldStyle(.roundedBorder).frame(width: 220)
+                }
+                .padding(.top, 4)
+            }
+            if !client.appsMessage.isEmpty {
+                Text(client.appsMessage).font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(.callout)
+        .onAppear { codeFocused = true }
+    }
+
+    private func pair() {
+        guard code.count == 6 else { return }
+        client.pairApps(code: code, address: address.trimmingCharacters(in: .whitespaces))
     }
 }

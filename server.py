@@ -160,7 +160,7 @@ class TVSession:
     # ------------------------------------------------------------ installed apps
 
     def apps_message(self, installed: list[str] | None = None) -> dict[str, Any]:
-        message: dict[str, Any] = {"type": "apps", "status": str(self.apps.status)}
+        message: dict[str, Any] = {"type": "apps", "status": str(self.apps.status), "message": self.apps.message}
         if installed is not None:
             message["installed"] = installed
         return message
@@ -545,6 +545,13 @@ async def _apps_connect(session: TVSession, _ws: web.WebSocketResponse, _message
     session.apps.connect(session.require_connected().host)
 
 
+async def _apps_pair(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    try:
+        session.apps.pair(session.require_connected().host, message.get("code"), message.get("address"))
+    except AppsError as exc:
+        raise UserError(str(exc)) from None
+
+
 async def _apps_list(session: TVSession, _ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
     try:
         installed = await session.apps.installed()
@@ -586,6 +593,7 @@ HANDLERS: dict[str, Handler] = {
     "phone_reset": _phone_reset,
     # Installed apps over ADB: the Mac app only, never phones.
     "apps_connect": _apps_connect,
+    "apps_pair": _apps_pair,
     "apps_list": _apps_list,
     "apps_launch": _apps_launch,
     "apps_uninstall": _apps_uninstall,

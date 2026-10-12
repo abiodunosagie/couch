@@ -71,9 +71,14 @@ final class AppModel: ObservableObject {
             self.client.show("\(friendlyApp(package)) was removed from the TV.")
         }
         client.onAppsConnectFailed = { [weak self] status in
-            self?.client.show(status == .denied
-                ? "The TV did not allow Couch. Choose Connect again and pick Allow on the TV."
-                : "Couch could not find debugging on the TV. See the steps in Apps.")
+            guard let self else { return }
+            let reason = self.client.appsMessage
+            switch status {
+            case .needsPairing: self.client.show(reason.isEmpty ? "Pair Couch with the TV once: see Apps." : reason)
+            case .denied: self.client.show(reason.isEmpty ? "The TV did not allow Couch. Try again." : reason)
+            case .noAdb: self.client.show("Google's adb tool is missing. See Apps.")
+            default: self.client.show(reason.isEmpty ? "Couch could not find debugging on the TV. See the steps in Apps." : reason)
+            }
         }
         linkWatch = client.$linkUp.sink { [weak self] up in
             if up { MainActor.assumeIsolated { self?.startFailed = false } }
