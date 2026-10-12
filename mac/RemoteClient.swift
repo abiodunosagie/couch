@@ -60,6 +60,13 @@ private struct VoiceMessage: Decodable {
     let listening: Bool
 }
 
+/// Phone remote settings from the helper. The URL carries the pairing token: Mac app only.
+struct PhoneInfo: Decodable, Equatable {
+    var enabled: Bool
+    var running: Bool
+    var url: String?
+}
+
 /// WebSocket link to the helper. Publishes TV state and short messages for the user.
 @MainActor
 final class RemoteClient: ObservableObject {
@@ -76,6 +83,7 @@ final class RemoteClient: ObservableObject {
     @Published var toast: String?
     /// True while the TV's voice search is taking audio from us.
     @Published private(set) var listening = false
+    @Published private(set) var phone: PhoneInfo?
 
     /// Called when the link drops, before reconnecting. Lets the app restart the helper.
     var onLinkLost: (() async -> Void)?
@@ -131,6 +139,8 @@ final class RemoteClient: ObservableObject {
             guard let next = try? JSONDecoder().decode(TVState.self, from: data) else { return }
             if !next.notice.isEmpty && next.noticeId != state.noticeId { show(next.notice) }
             state = next
+        case "phone":
+            phone = try? JSONDecoder().decode(PhoneInfo.self, from: data)
         case "voice":
             listening = (try? JSONDecoder().decode(VoiceMessage.self, from: data))?.listening ?? false
             if !listening { onListeningEnded?() }
@@ -247,6 +257,12 @@ final class RemoteClient: ObservableObject {
         guard !query.isEmpty, requireConnected() else { return }
         send(["type": "search", "query": query])
     }
+
+    // MARK: phone remote
+
+    func refreshPhone() { send(["type": "phone_get"]) }
+    func setPhone(enabled: Bool) { send(["type": "phone_set", "enabled": enabled]) }
+    func resetPhonePairing() { send(["type": "phone_reset"]) }
 
     func startPairing() { send(["type": "pair_start"]) }
 

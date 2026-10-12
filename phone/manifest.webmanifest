@@ -1,0 +1,11 @@
+{
+  "name": "Couch",
+  "short_name": "Couch",
+  "description": "TV remote for your Google TV",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#efebe5",
+  "theme_color": "#efebe5",
+  "icons": [{ "src": "/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }]
+}

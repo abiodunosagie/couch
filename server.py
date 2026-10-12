@@ -22,6 +22,7 @@ from aiohttp import WSMsgType, web
 from androidtvremote2 import AndroidTVRemote, CannotConnect, ConnectionClosed, InvalidAuth, VoiceStream
 from androidtvremote2.remote import VOICE_CHUNK_MIN_SIZE
 
+from phone import PhoneAccess
 from text_input import EDIT_KEYS, NAVIGATION_KEYS, FieldTrackingProtocol
 from tv import check_pairing_code, find_tv, make_remote
 
@@ -84,6 +85,7 @@ class TVSession:
         self._voice_owner: web.WebSocketResponse | None = None
         self._voice_buffer = bytearray()
         self._voice_timeout: asyncio.TimerHandle | None = None
+        self.phone: PhoneAccess  # set by serve()
 
     # ------------------------------------------------------------ state
 
@@ -400,7 +402,11 @@ async def websocket(request: web.Request) -> web.WebSocketResponse:
     # browser rule in force even when no token is set (tvremote serve from Terminal).
     if request.headers.get("Origin") is None:
         raise web.HTTPForbidden()
-    session = request.app[SESSION]
+    return await run_socket(request, request.app[SESSION], HANDLERS, voice=True)
+
+
+async def run_socket(request: web.Request, session: TVSession, handlers: dict[str, Handler], voice: bool) -> web.WebSocketResponse:
+    """Serve one client: push TV state, run its requests through `handlers`."""
     ws = web.WebSocketResponse(heartbeat=20, max_msg_size=MAX_MESSAGE_BYTES)
     await ws.prepare(request)
     session.clients.add(ws)
@@ -408,8 +414,8 @@ async def websocket(request: web.Request) -> web.WebSocketResponse:
     try:
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
-                await handle_message(request.app, ws, msg.data)
-            elif msg.type == WSMsgType.BINARY:
+                await handle_message(session, handlers, ws, msg.data)
+            elif msg.type == WSMsgType.BINARY and voice:
                 session.voice_audio(ws, msg.data)
     finally:
         session.voice_end(ws)
@@ -456,6 +462,20 @@ async def _voice_end(session: TVSession, ws: web.WebSocketResponse, _message: di
     session.voice_end(ws)
 
 
+async def _phone_get(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    await ws.send_json(session.phone.info())
+
+
+async def _phone_set(session: TVSession, ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    await session.phone.set_enabled(message.get("enabled") is True)
+    await ws.send_json(session.phone.info())
+
+
+async def _phone_reset(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    await session.phone.reset_token()
+    await ws.send_json(session.phone.info())
+
+
 HANDLERS: dict[str, Handler] = {
     "key": _key,
     "edit": _edit,
@@ -466,18 +486,26 @@ HANDLERS: dict[str, Handler] = {
     "pair_code": _pair_code,
     "voice_start": _voice_start,
     "voice_end": _voice_end,
+    "phone_get": _phone_get,
+    "phone_set": _phone_set,
+    "phone_reset": _phone_reset,
+}
+
+# Phones get the remote and typing; pairing, voice and phone settings stay on the Mac.
+PHONE_HANDLERS: dict[str, Handler] = {
+    name: HANDLERS[name] for name in ("key", "edit", "app", "open", "search")
 }
 
 
-async def handle_message(app: web.Application, ws: web.WebSocketResponse, data: str) -> None:
+async def handle_message(session: TVSession, handlers: dict[str, Handler], ws: web.WebSocketResponse, data: str) -> None:
     kind = None
     try:
         message = json.loads(data)
-        handler = HANDLERS.get(message.get("type")) if isinstance(message, dict) else None
+        handler = handlers.get(message.get("type")) if isinstance(message, dict) else None
         if handler is None:
             raise UserError(BAD_MESSAGE)
         kind = message["type"]
-        await handler(app[SESSION], ws, message)
+        await handler(session, ws, message)
     except json.JSONDecodeError:
         await ws.send_json({"type": "error", "message": BAD_MESSAGE})
     except UserError as exc:
@@ -511,6 +539,7 @@ async def serve(port: int, host: str | None, name: str | None, parent_pid: int |
     # zeroconf logs a full traceback for every interface without a route (VPN, Thunderbolt bridge).
     logging.getLogger("zeroconf").setLevel(logging.ERROR)
     session = TVSession(host, name)
+    session.phone = PhoneAccess(lambda request: run_socket(request, session, PHONE_HANDLERS, voice=False))
     shutdown = asyncio.Event()
     app = web.Application(middlewares=[local_only])
     app[SESSION] = session
@@ -525,6 +554,7 @@ async def serve(port: int, host: str | None, name: str | None, parent_pid: int |
     await web.TCPSite(runner, "127.0.0.1", port).start()
     log.info("Couch helper listening on 127.0.0.1:%s", port)
     session.start()
+    await session.phone.start()
     watchdog = asyncio.create_task(exit_when_parent_dies(parent_pid, shutdown)) if parent_pid else None
     try:
         await shutdown.wait()
@@ -532,4 +562,5 @@ async def serve(port: int, host: str | None, name: str | None, parent_pid: int |
         if watchdog:
             watchdog.cancel()
         session.close()
+        await session.phone.stop()
         await runner.cleanup()

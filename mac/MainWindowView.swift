@@ -9,6 +9,7 @@ struct MainWindowView: View {
     private enum Tab: String, CaseIterable {
         case remote = "Remote"
         case automation = "Automation"
+        case phone = "Phone"
     }
 
     init(model: AppModel) {
@@ -37,9 +38,11 @@ struct MainWindowView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 240)
+                .frame(width: 300)
 
-                if tab == .automation {
+                if tab == .phone {
+                    PhoneView(client: client)
+                } else if tab == .automation {
                     AutomationView(automations: model.automations, scenes: model.scenes, favourites: model.favourites)
                 } else if client.state.needsPairing {
                     PairingForm(client: client)

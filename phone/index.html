@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Couch">
+  <meta name="theme-color" content="#efebe5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#151413" media="(prefers-color-scheme: dark)">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icon.png">
+  <link rel="stylesheet" href="/style.css">
+  <title>Couch</title>
+</head>
+<body>
+  <header class="top">
+    <div>
+      <p class="status"><span class="dot" id="dot"></span><span id="status">Connecting</span></p>
+      <h1 id="tv">Couch</h1>
+      <p class="now" id="now">&nbsp;</p>
+    </div>
+    <div class="top-actions">
+      <button class="round-ghost" id="open-search" aria-label="Search YouTube">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+      </button>
+      <button class="round-ghost" id="open-type" aria-label="Type on the TV">
+        <svg viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h1M9 10h1M12 10h1M15 10h1M18 10h0.5M7 14h10"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="remote" id="remote">
+    <div class="pad" id="pad" aria-label="Direction pad. Tap the middle to select, swipe or tap the edges to move.">
+      <div class="wedge" id="wedge"></div>
+      <div class="ok" id="ok"></div>
+    </div>
+
+    <div class="grid">
+      <button class="key" data-key="BACK" aria-label="Back">
+        <svg viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+      </button>
+      <button class="key dark" data-key="MEDIA_PLAY_PAUSE" aria-label="Play or pause">
+        <svg viewBox="0 0 24 24"><path d="M7 5l9 7-9 7z" class="fill"/><path d="M18 6v12"/></svg>
+      </button>
+      <button class="key" data-key="HOME" aria-label="Home">
+        <svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z" class="fill"/></svg>
+      </button>
+      <button class="key" data-key="VOLUME_MUTE" aria-label="Mute">
+        <svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z" class="fill"/><path d="M17 9l4 6M21 9l-4 6"/></svg>
+      </button>
+      <button class="key label" data-app="youtube" aria-label="YouTube">YouTube</button>
+      <button class="key label" data-app="netflix" aria-label="Netflix">NETFLIX</button>
+    </div>
+
+    <div class="row-bottom">
+      <div class="tray">
+        <button class="key small" data-key="POWER" aria-label="Power">
+          <svg viewBox="0 0 24 24"><path d="M12 3v8M6.4 6.6a8 8 0 1 0 11.2 0"/></svg>
+        </button>
+        <span class="mic" id="light"></span>
+        <button class="key small" data-key="TV_INPUT" aria-label="TV input">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 12h8M13 9l3 3-3 3"/></svg>
+        </button>
+      </div>
+      <div class="rocker" aria-label="Volume">
+        <button data-key="VOLUME_UP" data-repeat aria-label="Volume up"><svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg></button>
+        <button data-key="VOLUME_DOWN" data-repeat aria-label="Volume down"><svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg></button>
+      </div>
+    </div>
+  </main>
+
+  <section class="sheet" id="sheet" hidden>
+    <div class="sheet-card">
+      <div class="sheet-head">
+        <h2 id="sheet-title">Type on the TV</h2>
+        <button class="text-button" id="sheet-close">Done</button>
+      </div>
+      <p class="mirror" id="mirror"></p>
+      <form id="sheet-form" autocomplete="off">
+        <input id="sheet-input" enterkeyhint="send" autocapitalize="sentences" spellcheck="false">
+        <button type="submit" class="primary" id="sheet-send">Send</button>
+      </form>
+      <div class="sheet-tools" id="type-tools">
+        <button class="tool" data-edit="DEL">Delete</button>
+        <button class="tool" data-edit="ENTER">Enter</button>
+        <button class="tool" id="clear">Clear</button>
+      </div>
+    </div>
+  </section>
+
+  <p class="toast" id="toast" role="status" aria-live="polite"></p>
+
+  <section class="gate" id="gate" hidden>
+    <h2>Scan the code on your Mac</h2>
+    <p>Open Couch on your Mac, choose Phone, and scan the QR code with this phone's camera.</p>
+  </section>
+
+  <script src="/app.js"></script>
+</body>
+</html>
