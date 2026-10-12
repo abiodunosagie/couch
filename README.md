@@ -120,9 +120,10 @@ open ~/Applications/Couch.app
 ## Privacy and security
 
 - The helper listens on `127.0.0.1` only and every request carries a random token made at launch, so other apps and websites cannot drive the TV.
-- The phone page is off by default. When on, it needs a pairing token from the QR code, checks Host and Origin, never receives the text of the TV's text box, and cannot reach pairing, voice, links or the app manager. Turning it off or choosing "Forget Paired Phones" disconnects phones at once.
+- The phone page is off by default. When on, it needs a pairing token from the QR code and checks Host and Origin. Phones can use the remote, type, search YouTube, reopen apps from the Recent strip and open Settings. They never receive the text of the TV's text box or when each app was last used, and cannot pair, use voice, open links, install or uninstall apps, or change TV settings. Turning it off or choosing "Forget Paired Phones" disconnects phones at once.
+- The phone page uses plain HTTP on your home network, so the pairing token is only as private as your Wi-Fi.
 - Keys and certificates live in `~/.config/tvremote`, readable only by you. Typed text and voice are never written to disk or logs.
-- The app manager runs only fixed commands with strictly checked, quoted arguments, and only uninstalls apps you installed.
+- The app manager runs only fixed commands with strictly checked, quoted arguments, only uninstalls apps you installed, and only changes the three TV settings it lists, always saving the TV's own value first.
 - Call detection reads whether another app is using the microphone. It records nothing.
 
 ## Command line
@@ -147,8 +148,10 @@ uv run pytest
 ```
 mac/            SwiftUI and AppKit app
 server.py       helper: WebSocket API and TV session
+handlers_apps.py requests that use the app manager, run off the socket loop
 text_input.py   typing into TV text boxes
-apps.py         installed apps over ADB
+apps.py         installed and recent apps over ADB
+tv_tools.py     installing, TV settings, space, memory, home screen
 phone.py        phone page server
 phone/          phone page (HTML, CSS, JS)
 tv.py           discovery, pairing, shared app table

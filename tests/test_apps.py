@@ -77,3 +77,45 @@ def test_task_ids_for_close():
     assert parse_task_ids(sample, "com.google.android.youtube.tv") == [101]
     assert parse_task_ids(sample, "com.google.android.apps.tv.launcherx") == []  # home is never removed
     assert parse_task_ids(sample, "com.missing.app") == []
+
+
+def _ready_manager(answers):
+    import apps
+    manager = apps.AppsManager(lambda: None)
+    manager.status = apps.AppsStatus.READY
+    manager._serial = "192.0.2.5:5555"
+
+    async def fake_adb(*args, timeout=apps.COMMAND_TIMEOUT_SECONDS):
+        answer = answers[args[-1]]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    manager._adb = fake_adb
+    return manager
+
+
+def test_a_slow_command_keeps_the_link():
+    import asyncio
+    import apps
+    manager = _ready_manager({"pm trim-caches 999G": apps.AppsTimeout("slow"), "get-state": "device\n"})
+    with pytest.raises(AppsError, match="still working"):
+        asyncio.run(manager.shell("pm trim-caches 999G"))
+    assert manager.status == apps.AppsStatus.READY and not manager.link_dropped
+
+
+def test_a_gone_tv_drops_the_link():
+    import asyncio
+    import apps
+    manager = _ready_manager({"pm trim-caches 999G": apps.AppsTimeout("slow"), "get-state": "error: device offline\n"})
+    with pytest.raises(AppsError, match="Lost the connection"):
+        asyncio.run(manager.shell("pm trim-caches 999G"))
+    assert manager.status == apps.AppsStatus.UNKNOWN and manager.link_dropped
+
+
+def test_install_notices_a_lost_device():
+    import asyncio
+    import apps
+    manager = _ready_manager({"/x.apk": "adb: device offline\n"})
+    with pytest.raises(AppsError, match="Lost the connection"):
+        asyncio.run(manager.device_command("install", "-r", "/x.apk", timeout=5))

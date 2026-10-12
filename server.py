@@ -15,7 +15,7 @@ import json
 import logging
 import os
 from urllib.parse import quote_plus, urlparse
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable
 from typing import Any
 
 from aiohttp import WSMsgType, web
@@ -23,6 +23,8 @@ from androidtvremote2 import AndroidTVRemote, CannotConnect, ConnectionClosed, I
 from androidtvremote2.remote import VOICE_CHUNK_MIN_SIZE
 
 from apps import AppsError, AppsManager, AppsStatus
+from errors import UserError
+from handlers_apps import APPS_HANDLERS, Handler, reply
 from phone import PhoneAccess
 from tv_tools import TVTools
 from text_input import EDIT_KEYS, NAVIGATION_KEYS, FieldTrackingProtocol
@@ -66,8 +68,17 @@ YOUTUBE_SEARCH = "https://www.youtube.com/results?search_query="
 log = logging.getLogger("tvremote.server")
 
 
-class UserError(Exception):
-    """A problem the page can show as is. Never wraps internal error text."""
+def ago(seconds: int | None) -> str:
+    """How long ago a recent app was on screen, as the Mac shows it."""
+    if seconds is None:
+        return "Recently"
+    if seconds < 60:
+        return "Just now"
+    if seconds < 3600:
+        return f"{seconds // 60} min ago"
+    if seconds < 86_400:
+        return f"{seconds // 3600} h ago"
+    return f"{seconds // 86_400} d ago"
 
 
 class TVSession:
@@ -100,6 +111,8 @@ class TVSession:
         self._last_apps_status = AppsStatus.UNKNOWN
         self._relinker: asyncio.Task[None] | None = None
         self._recents_timer: asyncio.TimerHandle | None = None
+        self._recents_round = 0  # the newest recent list wins when two lookups overlap
+        self.installing = False
 
     # ------------------------------------------------------------ state
 
@@ -166,19 +179,35 @@ class TVSession:
         self._recents_timer = asyncio.get_running_loop().call_later(
             RECENTS_SETTLE_SECONDS, lambda: self.spawn(self.push_recents()))
 
-    def recents_message(self, recents: list[dict]) -> dict[str, Any]:
-        return {"type": "recents", "apps": [dict(item, name=app_name(item["package"])) for item in recents]}
+    @staticmethod
+    def recents_message(recents: list[dict], for_phone: bool) -> dict[str, Any]:
+        if for_phone:
+            # Phones get names to tap, not when each app was last watched.
+            apps = [{"package": item["package"], "name": app_name(item["package"])} for item in recents]
+        else:
+            apps = [{"package": item["package"], "name": app_name(item["package"]), "live": item["live"],
+                     "when": ago(item["inactive"])} for item in recents]
+        return {"type": "recents", "apps": apps}
+
+    async def _fetch_recents(self) -> list[dict]:
+        if self.apps.status != AppsStatus.READY:
+            return []
+        try:
+            return await self.apps.recents()
+        except AppsError:
+            return []  # the link dropped; that status change is already sent
+
+    async def recents_for(self, ws: web.WebSocketResponse) -> dict[str, Any]:
+        return self.recents_message(await self._fetch_recents(), for_phone=ws in self.phone_clients)
 
     async def push_recents(self) -> None:
-        if self.apps.status != AppsStatus.READY:
-            return
-        try:
-            recents = await self.apps.recents()
-        except AppsError:
-            return
-        message = self.recents_message(recents)
-        await self._send_all(self.clients, message)
-        await self._send_all(self.phone_clients, message)
+        self._recents_round += 1
+        round_ = self._recents_round
+        recents = await self._fetch_recents()
+        if round_ != self._recents_round:
+            return  # a newer lookup started meanwhile; it sends the fresher list
+        await self._send_all(self.clients, self.recents_message(recents, for_phone=False))
+        await self._send_all(self.phone_clients, self.recents_message(recents, for_phone=True))
 
     async def close_phones(self) -> None:
         for ws in list(self.phone_clients):
@@ -199,6 +228,8 @@ class TVSession:
         if self.apps.status == AppsStatus.READY and self._last_apps_status != AppsStatus.READY:
             self.spawn(self.refresh_apps())
             self.spawn(self.push_recents())
+        elif self.apps.status != AppsStatus.READY and self._last_apps_status == AppsStatus.READY:
+            self.spawn(self.push_recents())  # an empty list, so no page keeps a strip it cannot use
         self._last_apps_status = self.apps.status
 
     async def refresh_apps(self) -> None:
@@ -224,8 +255,11 @@ class TVSession:
             self._relink_apps()
 
     def _relink_apps(self) -> None:
-        idle = {AppsStatus.UNKNOWN, AppsStatus.OFF, AppsStatus.DENIED, AppsStatus.NEEDS_PAIRING}
-        if (self.status == "connected" and self.remote is not None and self.apps.status in idle
+        """Reconnect a link that worked before. Never after a refusal or while it needs pairing:
+        those wait for the user, and retrying would show the TV's prompt again and again."""
+        retry = self.apps.status == AppsStatus.UNKNOWN or (
+            self.apps.status == AppsStatus.OFF and self.apps.link_dropped)
+        if (self.status == "connected" and self.remote is not None and retry
                 and AppsManager.was_linked() and not self.apps.busy()):
             self.apps.connect(self.remote.host)
 
@@ -469,6 +503,8 @@ class TVSession:
         self.voice_end()
         if self._relinker:
             self._relinker.cancel()
+        if self._recents_timer:
+            self._recents_timer.cancel()
         self._cancel_rediscover()
         if self._connector:
             self._connector.cancel()
@@ -534,9 +570,6 @@ async def run_socket(request: web.Request, session: TVSession, phone: bool) -> w
     return ws
 
 
-Handler = Callable[[TVSession, web.WebSocketResponse, dict[str, Any]], Awaitable[None]]
-
-
 async def _key(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
     session.send_key(message.get("key"))
 
@@ -587,160 +620,6 @@ async def _phone_reset(session: TVSession, ws: web.WebSocketResponse, _message: 
     await ws.send_json(session.phone.info())
 
 
-async def _apps_connect(session: TVSession, _ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
-    # Runs in the background (the TV may wait a minute for the user); status changes are pushed.
-    session.apps.connect(session.require_connected().host)
-
-
-async def _apps_pair(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
-    try:
-        session.apps.pair(session.require_connected().host, message.get("code"), message.get("address"))
-    except AppsError as exc:
-        raise UserError(str(exc)) from None
-
-
-def _app_manager(session: TVSession) -> AppsManager:
-    session.require_connected()
-    if session.apps.status != AppsStatus.READY:
-        raise UserError("This needs the TV's app manager. Connect it in Apps first.")
-    return session.apps
-
-
-async def _recents(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
-    if session.apps.status != AppsStatus.READY:
-        await ws.send_json(session.recents_message([]))  # the phone asks on every connect; no error
-        return
-    try:
-        recents = await _app_manager(session).recents()
-    except AppsError as exc:
-        raise UserError(str(exc)) from None
-    await ws.send_json(session.recents_message(recents))
-
-
-async def _resume(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
-    """Bring a recent app back. Phones may do this; it only reopens an app already in the list."""
-    try:
-        await _app_manager(session).launch(message.get("package"))
-    except AppsError as exc:
-        raise UserError(str(exc)) from None
-
-
-async def _close_app(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
-    try:
-        await _app_manager(session).close_app(message.get("package"))
-    except AppsError as exc:
-        raise UserError(str(exc)) from None
-    await session.push_recents()
-
-
-async def _tools_status(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
-    _app_manager(session)
-    try:
-        await ws.send_json(await session.tools.status())
-    except AppsError as exc:
-        raise UserError(str(exc)) from None
-
-
-def _tool(action):
-    """A Mac only TV upgrade: runs `action`, then sends the fresh status."""
-    async def handler(session: TVSession, ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
-        _app_manager(session)
-        try:
-            notice = await action(session, message)
-            await ws.send_json(await session.tools.status())
-        except AppsError as exc:
-            raise UserError(str(exc)) from None
-        if notice:
-            await ws.send_json({"type": "notice", "message": notice})
-    return handler
-
-
-async def _tweak(session: TVSession, message: dict[str, Any]) -> str | None:
-    await session.tools.set_tweak(message.get("name"), message.get("choice"))
-    return None
-
-
-async def _reset(session: TVSession, _message: dict[str, Any]) -> str:
-    await session.tools.reset_tweaks()
-    return "The TV settings are back the way they were."
-
-
-async def _free_space(session: TVSession, _message: dict[str, Any]) -> str:
-    await session.tools.free_space()
-    return "Cleared app caches on the TV."
-
-
-async def _free_memory(session: TVSession, _message: dict[str, Any]) -> str:
-    current = session.remote.current_app if session.remote else None
-    stopped = await session.tools.free_memory(current)
-    await session.push_recents()
-    return f"Stopped {stopped} app{'s' if stopped != 1 else ''} in the background." if stopped else "Nothing else was running."
-
-
-async def _home_suggest(session: TVSession, _message: dict[str, Any]) -> str:
-    await session.tools.suggest_home()
-    return "The Play Store page is open on the TV. Install it there, then choose it here."
-
-
-async def _home_set(session: TVSession, message: dict[str, Any]) -> str:
-    await session.tools.set_home(message.get("package"))
-    return "Home screen changed."
-
-
-async def _install(session: TVSession, ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
-    """Installing can take minutes; run it in the background and report when done."""
-    _app_manager(session)
-    path = message.get("path")
-
-    async def run() -> None:
-        await ws.send_json({"type": "install", "state": "installing"})
-        try:
-            name = await session.tools.install(path)
-        except AppsError as exc:
-            await ws.send_json({"type": "install", "state": "failed", "message": str(exc)})
-            return
-        await ws.send_json({"type": "install", "state": "done", "message": f"Installed {name} on the TV."})
-        await session.refresh_apps()
-
-    session.spawn(run())
-
-
-async def _open_settings(session: TVSession, _ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
-    session.require_connected()
-    if session.apps.status != AppsStatus.READY:
-        raise UserError("One click Settings needs the TV's app manager. Connect it in Apps first.")
-    try:
-        await session.apps.open_settings()
-    except AppsError as exc:
-        raise UserError(str(exc)) from None
-
-
-async def _apps_list(session: TVSession, _ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
-    try:
-        installed = await session.apps.installed()
-    except AppsError as exc:
-        raise UserError(str(exc)) from None
-    await session.broadcast(session.apps_message(installed))
-
-
-async def _apps_launch(session: TVSession, ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
-    session.require_connected()
-    try:
-        await session.apps.launch(message.get("package"))
-    except AppsError as exc:
-        raise UserError(str(exc)) from None
-    await ws.send_json({"type": "apps_launched", "package": message.get("package")})
-
-
-async def _apps_uninstall(session: TVSession, ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
-    try:
-        await session.apps.uninstall(message.get("package"))
-    except AppsError as exc:
-        raise UserError(str(exc)) from None
-    await ws.send_json({"type": "apps_uninstalled", "package": message.get("package")})
-    await _apps_list(session, ws, {})
-
-
 HANDLERS: dict[str, Handler] = {
     "key": _key,
     "edit": _edit,
@@ -754,53 +633,47 @@ HANDLERS: dict[str, Handler] = {
     "phone_get": _phone_get,
     "phone_set": _phone_set,
     "phone_reset": _phone_reset,
-    # Installed apps over ADB: the Mac app only, never phones.
-    "apps_connect": _apps_connect,
-    "apps_pair": _apps_pair,
-    "open_settings": _open_settings,
-    "recents": _recents,
-    "resume": _resume,
-    "close_app": _close_app,
-    "tools_status": _tools_status,
-    "tweak": _tool(_tweak),
-    "tweaks_reset": _tool(_reset),
-    "free_space": _tool(_free_space),
-    "free_memory": _tool(_free_memory),
-    "home_suggest": _tool(_home_suggest),
-    "home_set": _tool(_home_set),
-    "install_apk": _install,
-    "apps_list": _apps_list,
-    "apps_launch": _apps_launch,
-    "apps_uninstall": _apps_uninstall,
+    **APPS_HANDLERS,
 }
 
-# Phones get the remote, typing and YouTube search. Pairing, voice, links, phone settings
-# and the app manager stay on the Mac.
+# Phones get the remote, typing, YouTube search, the recent apps strip and one click Settings.
+# Pairing, voice, links, phone settings, installing, uninstalling and TV tweaks stay on the Mac.
 PHONE_HANDLERS: dict[str, Handler] = {
     name: HANDLERS[name] for name in ("key", "edit", "app", "search", "open_settings", "recents", "resume")
 }
 
 
 async def handle_message(session: TVSession, handlers: dict[str, Handler], ws: web.WebSocketResponse, data: str) -> None:
-    kind = None
     try:
         message = json.loads(data)
-        handler = handlers.get(message.get("type")) if isinstance(message, dict) else None
-        if handler is None:
-            raise UserError(BAD_MESSAGE)
-        kind = message["type"]
-        await handler(session, ws, message)
     except json.JSONDecodeError:
-        await ws.send_json({"type": "error", "message": BAD_MESSAGE})
+        await reply(ws, {"type": "error", "message": BAD_MESSAGE})
+        return
+    kind = message.get("type") if isinstance(message, dict) else None
+    handler = handlers.get(kind) if isinstance(kind, str) else None
+    if handler is None:
+        await reply(ws, {"type": "error", "message": BAD_MESSAGE, "for": None})
+        return
+    run = run_handler(session, handler, ws, message, kind)
+    if kind in APPS_HANDLERS:
+        session.spawn(run)  # adb can take minutes; keep this socket's keys and voice flowing
+    else:
+        await run
+
+
+async def run_handler(session: TVSession, handler: Handler, ws: web.WebSocketResponse,
+                      message: dict[str, Any], kind: str) -> None:
+    try:
+        await handler(session, ws, message)
     except UserError as exc:
         # `for` tells the app which request failed, so a typing error does not cancel a voice hold.
-        await ws.send_json({"type": "error", "message": str(exc), "for": kind})
+        await reply(ws, {"type": "error", "message": str(exc), "for": kind})
     except (CannotConnect, ConnectionClosed):
-        await ws.send_json({"type": "error", "message": TV_UNREACHABLE})
+        await reply(ws, {"type": "error", "message": TV_UNREACHABLE})
     except Exception:
         # Log the message type only: text messages can hold passwords typed for the TV.
         log.exception("failed to handle a %r message", kind)
-        await ws.send_json({"type": "error", "message": "Something went wrong. Try again."})
+        await reply(ws, {"type": "error", "message": "Something went wrong. Try again."})
 
 
 async def exit_when_parent_dies(parent_pid: int, shutdown: asyncio.Event) -> None:

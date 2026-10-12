@@ -62,19 +62,39 @@ struct TVTools: Decodable, Equatable {
         let total: Int
         let free: Int
     }
+    /// A picker for one hidden setting; the helper lists the only choices it accepts.
+    struct Option: Decodable, Equatable, Identifiable {
+        struct Choice: Decodable, Equatable {
+            let id: String
+            let label: String
+        }
+        let name: String
+        let title: String
+        let choices: [Choice]
+        var id: String { name }
+    }
     let tweaks: [String: String]
+    let options: [Option]
     let changed: [String]
     let storage: Amount?
     let memory: Amount?
     let home: String?
+
+    enum CodingKeys: String, CodingKey {
+        case tweaks, options, changed, storage, memory, home
+        case googleHome = "google_home"
+        case suggestedHome = "suggested_home"
+    }
+    let googleHome: String
+    let suggestedHome: String
 }
 
 /// An app in the TV's recent list.
 struct RecentApp: Decodable, Equatable, Identifiable {
     let package: String
     let name: String?
-    /// Seconds since it was last in front.
-    let inactive: Int?
+    /// When it was last on screen, like "5 min ago", worded by the helper.
+    let when: String
     /// Still running, so it comes back where it was; otherwise it starts fresh.
     let live: Bool
     var id: String { package }

@@ -81,10 +81,18 @@ class AppsError(Exception):
     """A failure with a message fit to show the user."""
 
 
+class AppsTimeout(AppsError):
+    """adb gave up waiting. The TV may only be slow, so this alone does not mean the link is gone."""
+
+
+def is_package(package: object) -> bool:
+    return isinstance(package, str) and len(package) <= MAX_PACKAGE_LENGTH and PACKAGE_NAME.fullmatch(package) is not None
+
+
 def check_package(package: object) -> str:
-    if not isinstance(package, str) or len(package) > MAX_PACKAGE_LENGTH or not PACKAGE_NAME.fullmatch(package):
+    if not is_package(package):
         raise AppsError("That is not an app name.")
-    return package
+    return package  # type: ignore[return-value]
 
 
 def parse_packages(output: str) -> list[str]:
@@ -143,7 +151,7 @@ def parse_recents(output: str, hidden: frozenset[str] = frozenset()) -> list[dic
         if not component:
             continue
         package = component.group(1)
-        if package in seen or package in NOT_RECENT_APPS or package in hidden or not PACKAGE_NAME.fullmatch(package):
+        if package in seen or package in NOT_RECENT_APPS or package in hidden or not is_package(package):
             continue
         seen.add(package)
         inactive = re.search(r"inactive for (\d+)s", block)
@@ -230,6 +238,9 @@ class AppsManager:
         self._lock = asyncio.Lock()  # one adb command at a time
         self._installed: set[str] = set()
         self._server_started = False
+        # True after a working link dropped (TV restart, new port): only then does Couch reconnect
+        # by itself. A refusal or a missing pairing waits for the user.
+        self.link_dropped = False
 
     @staticmethod
     def was_linked() -> bool:
@@ -237,9 +248,11 @@ class AppsManager:
         return LINKED_FILE.exists()
 
     def _set(self, status: AppsStatus, message: str = "") -> None:
-        if status == AppsStatus.READY and not LINKED_FILE.exists():
-            ensure_config_dir()
-            LINKED_FILE.touch(mode=0o600)
+        if status == AppsStatus.READY:
+            self.link_dropped = False
+            if not LINKED_FILE.exists():
+                ensure_config_dir()
+                LINKED_FILE.touch(mode=0o600)
         if status != self.status or message != self.message:
             self.status = status
             self.message = message
@@ -271,7 +284,7 @@ class AppsManager:
                 process.kill()
                 await process.wait()
             if isinstance(exc, TimeoutError):
-                raise AppsError("The TV did not answer in time.") from None
+                raise AppsTimeout("The TV did not answer in time.") from None
             raise
         return output.decode(errors="replace")
 
@@ -381,77 +394,94 @@ class AppsManager:
 
     # ------------------------------------------------------------ commands
 
-    async def _shell(self, *commands: str) -> list[str]:
-        """Run TV shell commands in order; a failure marks the link as down."""
+    async def shell(self, *commands: str, timeout: float = COMMAND_TIMEOUT_SECONDS) -> list[str]:
+        """Run TV shell commands in order. Callers must check and quote every value."""
+        return await self._on_tv_many([("shell", command) for command in commands], timeout)
+
+    async def device_command(self, *args: str, timeout: float) -> str:
+        """An adb command addressed to the TV (install), for tv_tools.py."""
+        return await self._on_tv(args, timeout)
+
+    async def _on_tv(self, args: tuple[str, ...], timeout: float) -> str:
+        (output,) = await self._on_tv_many([args], timeout)
+        return output
+
+    async def _on_tv_many(self, commands: list[tuple[str, ...]], timeout: float) -> list[str]:
+        """Run adb commands addressed to the TV, one at a time under the lock.
+
+        adb's own errors ("error: device offline") mean the link is gone. A timeout alone does
+        not: Free Up Space or an install can be slow, so ask the TV whether it is still there.
+        """
         if self.status != AppsStatus.READY or not self._serial:
             raise AppsError("Couch is not connected to the TV's app manager.")
+        serial = self._serial
         results = []
-        try:
-            async with self._lock:
-                for command in commands:
-                    results.append(await self._adb("-s", self._serial, "shell", command))
-        except AppsError:
-            self._link_lost()
+        async with self._lock:
+            try:
+                for args in commands:
+                    results.append(await self._adb("-s", serial, *args, timeout=timeout))
+            except AppsTimeout:
+                if await self._still_there(serial):
+                    raise AppsError("The TV is still working on it. Check again in a moment.") from None
+                self._link_lost()
+            except AppsError:
+                self._link_lost()
         if any(lost_device(result) for result in results):
             self._link_lost()
         return results
 
-    async def shell(self, *commands: str) -> list[str]:
-        """TV shell commands for tv_tools.py. Callers must check and quote every value."""
-        return await self._shell(*commands)
-
-    async def device_command(self, *args: str, timeout: float) -> str:
-        """An adb command addressed to the TV (install), for tv_tools.py."""
-        if self.status != AppsStatus.READY or not self._serial:
-            raise AppsError("Couch is not connected to the TV's app manager.")
-        async with self._lock:
-            return await self._adb("-s", self._serial, *args, timeout=timeout)
+    async def _still_there(self, serial: str) -> bool:
+        try:
+            return last_line(await self._adb("-s", serial, "get-state")) == "device"
+        except AppsError:
+            return False
 
     def _link_lost(self) -> None:
+        self.link_dropped = True
         self._set(AppsStatus.UNKNOWN)
         raise AppsError("Lost the connection to the TV's app manager. Open Apps to reconnect.")
 
     async def installed(self) -> list[str]:
         """Apps the user installed (not system apps), sorted by package name."""
-        (output,) = await self._shell("pm list packages -3")
+        (output,) = await self.shell("pm list packages -3")
         packages = parse_packages(output)
         self._installed = set(packages)
         return packages
 
     async def launch(self, package: object) -> None:
         name = check_package(package)
-        (resolved,) = await self._shell(
+        (resolved,) = await self.shell(
             f"cmd package resolve-activity --brief -c android.intent.category.LEANBACK_LAUNCHER {shlex.quote(name)}")
         lines = resolved.strip().splitlines()
         target = lines[-1].strip() if lines else ""
         if COMPONENT.fullmatch(target):
             # The same intent the home screen sends, so a paused app comes back where it was.
-            (result,) = await self._shell(
+            (result,) = await self.shell(
                 "am start -a android.intent.action.MAIN -c android.intent.category.LEANBACK_LAUNCHER "
                 f"-f 0x10200000 -n {shlex.quote(target)}")
             if result.lstrip().startswith("Starting:") and not re.search(r"^Error", result, re.MULTILINE):
                 return
         # No TV launcher entry; ask Android to start it any way it can.
-        (result,) = await self._shell(f"monkey -p {shlex.quote(name)} -c android.intent.category.LAUNCHER 1")
+        (result,) = await self.shell(f"monkey -p {shlex.quote(name)} -c android.intent.category.LAUNCHER 1")
         if not re.search(r"^Events injected: 1\b", result, re.MULTILINE):
             raise AppsError("That app has no screen to open.")
 
     async def recents(self, hidden: frozenset[str] = frozenset()) -> list[dict]:
-        (output,) = await self._shell("dumpsys activity recents")
+        (output,) = await self.shell("dumpsys activity recents")
         return parse_recents(output, hidden)
 
     async def close_app(self, package: object) -> None:
         """Stop an app, free its memory and take it off the recent list. It stays installed."""
         name = check_package(package)
-        (_, output) = await self._shell(f"am force-stop {shlex.quote(name)}", "dumpsys activity recents")
+        (_, output) = await self.shell(f"am force-stop {shlex.quote(name)}", "dumpsys activity recents")
         # force-stop leaves the app's card in the TV's recents; removing its tasks clears it.
         tasks = parse_task_ids(output, name)
         if tasks:
-            await self._shell(*(f"am stack remove {task}" for task in tasks))
+            await self.shell(*(f"am stack remove {task}" for task in tasks))
 
     async def open_settings(self) -> None:
         """The TV's main Settings in one step (the remote's Settings key does nothing on Google TV)."""
-        (result,) = await self._shell("am start -a android.settings.SETTINGS")
+        (result,) = await self.shell("am start -a android.settings.SETTINGS")
         if not result.lstrip().startswith("Starting:"):
             raise AppsError("The TV did not open Settings.")
 
@@ -459,7 +489,7 @@ class AppsManager:
         name = check_package(package)
         if name not in self._installed:
             raise AppsError("Couch only removes apps you installed.")
-        (result,) = await self._shell(f"pm uninstall --user 0 {shlex.quote(name)}")
+        (result,) = await self.shell(f"pm uninstall --user 0 {shlex.quote(name)}")
         if not result.strip().startswith("Success"):
             log.info("uninstall %s: %s", name, result.strip()[:LOG_SNIPPET_CHARS])
             raise AppsError("The TV did not remove that app.")

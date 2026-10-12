@@ -1,9 +1,12 @@
 """TV upgrade helpers: parsing and the strict checks before anything reaches the TV."""
 
+import json
+
 import pytest
 
 from apps import AppsError
-from tv_tools import TWEAKS, check_apk, install_result, parse_memory, parse_storage
+import tv_tools
+from tv_tools import TWEAKS, WRITABLE, check_apk, home_package, install_result, parse_memory, parse_storage
 
 
 def test_storage_and_memory():
@@ -30,6 +33,38 @@ def test_apk_paths_are_checked(tmp_path):
 
 
 def test_tweak_values_are_fixed():
-    for namespace, key, choices in TWEAKS.values():
-        assert namespace in {"global", "system", "secure"}
-        assert all(value.replace(".", "").isdigit() for value in choices.values())
+    for tweak in TWEAKS.values():
+        assert tweak.namespace in {"global", "system", "secure"}
+        assert all(value.replace(".", "").isdigit() for _choice, _label, value in tweak.choices)
+    assert TWEAKS["screensaver_after"].choice("600000") == "10"
+    assert TWEAKS["animations"].choice("0.5") == "fast"
+    assert TWEAKS["sleep_after"].choice("12345") == "custom"
+    assert TWEAKS["sleep_after"].value("120") == "7200000"
+    assert TWEAKS["sleep_after"].value("7") is None
+    assert [label for _c, label, _v in TWEAKS["sleep_after"].choices] == ["30 min", "1 hour", "2 hours", "4 hours"]
+
+
+def test_writable_keys_are_exact_pairs():
+    assert "global/transition_animation_scale" in WRITABLE
+    assert "secure/window_animation_scale" not in WRITABLE  # right key, wrong namespace
+    assert "system/transition_animation_scale" not in WRITABLE
+
+
+def test_tampered_originals_are_ignored(tmp_path, monkeypatch):
+    monkeypatch.setattr(tv_tools, "ORIGINALS_FILE", tmp_path / "originals.json")
+    (tmp_path / "originals.json").write_text(json.dumps({
+        "global/window_animation_scale": "1.0",
+        "system/screen_off_timeout": "null",
+        "secure/sleep_timeout": "Exception occurred while executing",
+        "secure/window_animation_scale": "0",
+        "noslash": "1",
+        "global/animator_duration_scale": 5,
+    }))
+    assert tv_tools._load_originals() == {"global/window_animation_scale": "1.0", "system/screen_off_timeout": "null"}
+
+
+def test_home_package():
+    assert home_package("priority=0 preferredOrder=0\ncom.google.android.apps.tv.launcherx/.home.HomeActivity\n") == \
+        "com.google.android.apps.tv.launcherx"
+    assert home_package("No activity found\n") is None
+    assert home_package("") is None

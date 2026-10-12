@@ -13,40 +13,76 @@ import os
 import re
 import shlex
 from pathlib import Path
+from typing import NamedTuple
 
-from apps import AppsError, AppsManager, check_package
+from apps import COMPONENT, AppsError, AppsManager, check_package, is_package
 from tv import CONFIG_DIR, ensure_config_dir
 
 log = logging.getLogger("tvremote.tools")
 
 ORIGINALS_FILE = CONFIG_DIR / "tv_originals.json"
 INSTALL_TIMEOUT_SECONDS = 600.0
+# Android asks every app to drop its cache; on a full TV that takes a while.
+FREE_SPACE_TIMEOUT_SECONDS = 180.0
 MAX_APK_BYTES = 2 * 1024 ** 3
 GOOGLE_HOME = "com.google.android.apps.tv.launcherx"
 # A popular ad free home screen for Google TV; Couch opens its Play Store page, the user installs it.
 SUGGESTED_HOME = "com.spocky.projengmenu"
+HOME_RESOLVE = "cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME"
+# What `settings get` prints for a setting the TV never stored, and Reset deletes again.
+UNSET = "null"
+NUMBER = re.compile(r"-?\d+(\.\d+)?")
 
 MINUTE_MS = 60_000
-# name: (namespace, key, {choice: value}). Only these keys and values are ever written.
-TWEAKS: dict[str, tuple[str, str, dict[str, str]]] = {
-    "animations": ("global", "window_animation_scale", {"normal": "1.0", "fast": "0.5", "off": "0"}),
-    "screensaver_after": ("system", "screen_off_timeout",
-                          {"5": str(5 * MINUTE_MS), "10": str(10 * MINUTE_MS), "15": str(15 * MINUTE_MS),
-                           "30": str(30 * MINUTE_MS)}),
-    "sleep_after": ("secure", "sleep_timeout",
-                    {"30": str(30 * MINUTE_MS), "60": str(60 * MINUTE_MS), "120": str(120 * MINUTE_MS),
-                     "240": str(240 * MINUTE_MS)}),
+
+
+class Tweak(NamedTuple):
+    """A hidden TV setting: the only keys Couch writes and the only values they may take."""
+
+    title: str
+    namespace: str
+    keys: tuple[str, ...]
+    choices: tuple[tuple[str, str, str], ...]  # (choice, label, value written)
+
+    def value(self, choice: object) -> str | None:
+        return next((value for c, _label, value in self.choices if c == choice), None)
+
+    def choice(self, value: str) -> str:
+        """The choice the TV's current value matches, or "custom" for the TV's own value."""
+        return next((c for c, _label, v in self.choices if _same(v, value)), "custom")
+
+
+def _minutes(*counts: int) -> tuple[tuple[str, str, str], ...]:
+    def label(count: int) -> str:
+        return f"{count} min" if count < 60 else f"{count // 60} hour{'s' if count >= 120 else ''}"
+    return tuple((str(count), label(count), str(count * MINUTE_MS)) for count in counts)
+
+
+TWEAKS: dict[str, Tweak] = {
+    # Animation speed is three settings that move together.
+    "animations": Tweak("Animations", "global",
+                        ("window_animation_scale", "transition_animation_scale", "animator_duration_scale"),
+                        (("normal", "Normal", "1.0"), ("fast", "Fast", "0.5"), ("off", "Off", "0"))),
+    "screensaver_after": Tweak("Screensaver after", "system", ("screen_off_timeout",), _minutes(5, 10, 15, 30)),
+    "sleep_after": Tweak("Turn off after", "secure", ("sleep_timeout",), _minutes(30, 60, 120, 240)),
 }
-# Animation speed is three settings that move together.
-ANIMATION_KEYS = ("window_animation_scale", "transition_animation_scale", "animator_duration_scale")
+# Every (namespace, key) Couch may ever write, also on Reset.
+WRITABLE = frozenset(f"{tweak.namespace}/{key}" for tweak in TWEAKS.values() for key in tweak.keys)
+
+
+def _valid_original(value: object) -> bool:
+    return isinstance(value, str) and (value == UNSET or NUMBER.fullmatch(value) is not None)
 
 
 def _load_originals() -> dict[str, str]:
+    """Saved TV values, keeping only known keys with a plain number (or unset) as the value."""
     try:
         data = json.loads(ORIGINALS_FILE.read_text())
     except (OSError, json.JSONDecodeError):
         return {}
-    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)} if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    return {entry: value for entry, value in data.items() if entry in WRITABLE and _valid_original(value)}
 
 
 def _save_originals(originals: dict[str, str]) -> None:
@@ -54,6 +90,13 @@ def _save_originals(originals: dict[str, str]) -> None:
     fd = os.open(ORIGINALS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as out:
         json.dump(originals, out, indent=2)
+
+
+def home_package(resolved: str) -> str | None:
+    """The package in the last line of `resolve-activity --brief` (package/activity)."""
+    lines = resolved.strip().splitlines()
+    package = lines[-1].strip().split("/")[0] if lines else ""
+    return package if is_package(package) else None
 
 
 def parse_storage(df_output: str) -> dict[str, int] | None:
@@ -126,56 +169,58 @@ class TVTools:
     # ------------------------------------------------------------ status
 
     async def status(self) -> dict:
-        commands = [f"settings get {namespace} {key}" for namespace, key, _ in TWEAKS.values()]
-        commands += ["df -k /data", "cat /proc/meminfo",
-                     "cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME"]
-        outputs = await self.apps.shell(*commands)
-        tweaks = {}
-        for (name, (_ns, _key, choices)), value in zip(TWEAKS.items(), outputs[:len(TWEAKS)]):
-            value = value.strip()
-            tweaks[name] = next((choice for choice, v in choices.items() if _same(v, value)), "custom")
-        home_lines = outputs[-1].strip().splitlines()
-        home = home_lines[-1].split("/")[0] if home_lines else None
+        tweak_commands = [f"settings get {t.namespace} {t.keys[0]}" for t in TWEAKS.values()]
+        *tweak_values, storage, memory, home = await self.apps.shell(
+            *tweak_commands, "df -k /data", "cat /proc/meminfo", HOME_RESOLVE)
         return {
             "type": "tv_tools",
-            "tweaks": tweaks,
+            "tweaks": {name: tweak.choice(value.strip()) for (name, tweak), value in zip(TWEAKS.items(), tweak_values)},
+            # The pickers, so the Mac shows exactly the choices allowed here.
+            "options": [{"name": name, "title": tweak.title,
+                         "choices": [{"id": c, "label": label} for c, label, _value in tweak.choices]}
+                        for name, tweak in TWEAKS.items()],
             "changed": sorted(_load_originals()),
-            "storage": parse_storage(outputs[len(TWEAKS)]),
-            "memory": parse_memory(outputs[len(TWEAKS) + 1]),
-            "home": home if home and check_package_ok(home) else None,
+            "storage": parse_storage(storage),
+            "memory": parse_memory(memory),
+            "home": home_package(home),
+            "google_home": GOOGLE_HOME,
+            "suggested_home": SUGGESTED_HOME,
         }
 
     # ------------------------------------------------------------ tweaks
 
     async def set_tweak(self, name: object, choice: object) -> None:
-        if name not in TWEAKS:
+        tweak = TWEAKS.get(name) if isinstance(name, str) else None
+        if tweak is None:
             raise AppsError("Unknown setting.")
-        namespace, key, choices = TWEAKS[name]
-        if choice not in choices:
+        value = tweak.value(choice)
+        if value is None:
             raise AppsError("That value is not allowed.")
-        keys = ANIMATION_KEYS if name == "animations" else (key,)
-        await self._remember_originals(namespace, keys)
-        await self.apps.shell(*(f"settings put {namespace} {k} {shlex.quote(choices[choice])}" for k in keys))
+        await self._remember_originals(tweak)
+        await self.apps.shell(*(f"settings put {tweak.namespace} {key} {shlex.quote(value)}" for key in tweak.keys))
 
-    async def _remember_originals(self, namespace: str, keys: tuple[str, ...]) -> None:
+    async def _remember_originals(self, tweak: Tweak) -> None:
+        """Save the TV's own values the first time Couch changes them, so Reset can put them back."""
         originals = _load_originals()
-        missing = [k for k in keys if f"{namespace}/{k}" not in originals]
+        missing = [key for key in tweak.keys if f"{tweak.namespace}/{key}" not in originals]
         if not missing:
             return
-        values = await self.apps.shell(*(f"settings get {namespace} {k}" for k in missing))
-        for k, value in zip(missing, values):
-            originals[f"{namespace}/{k}"] = value.strip()
+        values = await self.apps.shell(*(f"settings get {tweak.namespace} {key}" for key in missing))
+        for key, value in zip(missing, values):
+            value = value.strip()
+            if not _valid_original(value):
+                # Never change a setting whose value could not be saved: Reset could not undo it.
+                log.info("settings get %s/%s gave no value", tweak.namespace, key)
+                raise AppsError("The TV did not report that setting. Try again.")
+            originals[f"{tweak.namespace}/{key}"] = value
         _save_originals(originals)
 
     async def reset_tweaks(self) -> None:
         """Put back every setting Couch changed, exactly as the TV had it."""
-        originals = _load_originals()
         commands = []
-        for entry, value in originals.items():
-            namespace, key = entry.split("/", 1)
-            if not _known_key(namespace, key):
-                continue
-            commands.append(f"settings delete {namespace} {key}" if value == "null"
+        for entry, value in _load_originals().items():
+            namespace, key = entry.split("/", 1)  # only WRITABLE entries are loaded
+            commands.append(f"settings delete {namespace} {key}" if value == UNSET
                             else f"settings put {namespace} {key} {shlex.quote(value)}")
         if commands:
             await self.apps.shell(*commands)
@@ -185,7 +230,7 @@ class TVTools:
 
     async def free_space(self) -> None:
         """Clear app caches: Android asks every app to drop cached files. Nothing personal is deleted."""
-        await self.apps.shell("pm trim-caches 999G")
+        await self.apps.shell("pm trim-caches 999G", timeout=FREE_SPACE_TIMEOUT_SECONDS)
 
     async def free_memory(self, keep: str | None) -> int:
         """Stop apps running in the background, except the one on screen."""
@@ -204,12 +249,10 @@ class TVTools:
 
     async def set_home(self, package: object) -> None:
         name = check_package(package)
-        (resolved,) = await self.apps.shell(
-            f"cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME "
-            f"{shlex.quote(name)}")
+        (resolved,) = await self.apps.shell(f"{HOME_RESOLVE} {shlex.quote(name)}")
         lines = resolved.strip().splitlines()
         component = lines[-1].strip() if lines else ""
-        if not component.startswith(name + "/"):
+        if home_package(resolved) != name or not COMPONENT.fullmatch(component):
             raise AppsError("That app is not a home screen. Install it on the TV first.")
         (result,) = await self.apps.shell(f"cmd package set-home-activity {shlex.quote(component)}")
         if "Success" not in result and result.strip():
@@ -223,15 +266,3 @@ def _same(a: str, b: str) -> bool:
         return float(a) == float(b)
     except ValueError:
         return a == b
-
-
-def _known_key(namespace: str, key: str) -> bool:
-    return any(namespace == ns and (key == k or key in ANIMATION_KEYS) for ns, k, _ in TWEAKS.values())
-
-
-def check_package_ok(package: str) -> bool:
-    try:
-        check_package(package)
-    except AppsError:
-        return False
-    return True

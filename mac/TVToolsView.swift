@@ -7,9 +7,6 @@ struct TVToolsView: View {
     @State private var dropTargeted = false
     @State private var confirmFreeMemory = false
 
-    private static let googleHome = "com.google.android.apps.tv.launcherx"
-    private static let suggestedHome = "com.spocky.projengmenu"
-
     var body: some View {
         Group {
             if client.appsLink != .ready {
@@ -40,11 +37,7 @@ struct TVToolsView: View {
             }
 
             section("Speed and sleep") {
-                picker("Animations", "animations", tools, [("normal", "Normal"), ("fast", "Fast"), ("off", "Off")])
-                picker("Screensaver after", "screensaver_after", tools,
-                       [("5", "5 min"), ("10", "10 min"), ("15", "15 min"), ("30", "30 min")])
-                picker("Turn off after", "sleep_after", tools,
-                       [("30", "30 min"), ("60", "1 hour"), ("120", "2 hours"), ("240", "4 hours")])
+                ForEach(tools.options) { option in picker(option, tools) }
                 if !tools.changed.isEmpty {
                     Button("Reset to the TV's Own Settings") { client.resetTweaks() }
                         .buttonStyle(.link)
@@ -57,19 +50,19 @@ struct TVToolsView: View {
 
             section("Home screen") {
                 let home = tools.home
-                Text("Now: \(home == Self.googleHome ? "Google TV" : home.map(friendlyApp) ?? "unknown")")
+                Text("Now: \(home == tools.googleHome ? "Google TV" : home.map(friendlyApp) ?? "unknown")")
                     .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
-                    if client.installedApps.contains(Self.suggestedHome) {
-                        if home != Self.suggestedHome {
-                            Button("Use Projectivy") { client.setHome(Self.suggestedHome) }
+                    if client.installedApps.contains(tools.suggestedHome) {
+                        if home != tools.suggestedHome {
+                            Button("Use Projectivy") { client.setHome(tools.suggestedHome) }
                         }
                     } else {
                         Button("Get Projectivy on the TV") { client.suggestHome() }
                             .help("An ad free home screen you can arrange. Opens its Play Store page on the TV.")
                     }
-                    if home != Self.googleHome {
-                        Button("Back to Google TV") { client.setHome(Self.googleHome) }
+                    if home != tools.googleHome {
+                        Button("Back to Google TV") { client.setHome(tools.googleHome) }
                     }
                 }
             }
@@ -95,7 +88,9 @@ struct TVToolsView: View {
                 .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5]))
                 .foregroundStyle(dropTargeted ? Color.accentColor : Color.secondary.opacity(0.5)))
             .dropDestination(for: URL.self) { urls, _ in
-                guard let file = urls.first(where: { $0.pathExtension.lowercased() == "apk" }) else { return false }
+                // One install at a time, like the Choose File button.
+                guard !client.installing,
+                      let file = urls.first(where: { $0.pathExtension.lowercased() == "apk" }) else { return false }
                 client.install(file)
                 return true
             } isTargeted: { dropTargeted = $0 }
@@ -114,12 +109,12 @@ struct TVToolsView: View {
         if panel.runModal() == .OK, let file = panel.url { client.install(file) }
     }
 
-    private func picker(_ title: String, _ name: String, _ tools: TVTools, _ options: [(String, String)]) -> some View {
-        Picker(title, selection: Binding(
-            get: { tools.tweaks[name] ?? "custom" },
-            set: { client.setTweak(name, $0) })) {
-            ForEach(options, id: \.0) { Text($0.1).tag($0.0) }
-            if tools.tweaks[name] == "custom" { Text("TV's own").tag("custom") }
+    private func picker(_ option: TVTools.Option, _ tools: TVTools) -> some View {
+        Picker(option.title, selection: Binding(
+            get: { tools.tweaks[option.name] ?? "custom" },
+            set: { client.setTweak(option.name, $0) })) {
+            ForEach(option.choices, id: \.id) { Text($0.label).tag($0.id) }
+            if tools.tweaks[option.name] == "custom" { Text("TV's own").tag("custom") }
         }
         .frame(maxWidth: 280)
     }

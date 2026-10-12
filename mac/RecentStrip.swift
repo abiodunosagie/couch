@@ -52,7 +52,7 @@ private struct RecentCard: View {
                         .frame(width: 6, height: 6)
                     Text(name).font(.system(size: compact ? 12 : 13, weight: .semibold)).lineLimit(1)
                 }
-                Text(current ? "On screen" : Self.ago(app.inactive))
+                Text(current ? "On screen" : app.when)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -84,16 +84,6 @@ private struct RecentCard: View {
         .contextMenu {
             Button("Open", action: open)
             Button("Close on the TV", role: .destructive, action: close)
-        }
-    }
-
-    static func ago(_ seconds: Int?) -> String {
-        guard let seconds else { return "Recently" }
-        switch seconds {
-        case ..<60: return "Just now"
-        case ..<3600: return "\(seconds / 60) min ago"
-        case ..<86_400: return "\(seconds / 3600) h ago"
-        default: return "\(seconds / 86_400) d ago"
         }
     }
 }

@@ -137,14 +137,6 @@ function renderMirror() {
 
 let recents = [];
 
-function ago(seconds) {
-  if (seconds == null) return "Recently";
-  if (seconds < 60) return "Just now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} h ago`;
-  return `${Math.floor(seconds / 86400)} d ago`;
-}
-
 function renderRecents(apps) {
   recents = apps;
   const strip = $("recents");
@@ -156,7 +148,8 @@ function renderRecents(apps) {
     const name = document.createElement("b");
     name.textContent = app.name || app.package;
     const when = document.createElement("span");
-    when.textContent = app.package === state.app ? "On screen" : ago(app.inactive);
+    // Phones get names only, not when each app was last watched.
+    when.textContent = app.package === state.app ? "On screen" : "Open";
     card.append(name, when);
     card.addEventListener("click", () => sendIfConnected({ type: "resume", package: app.package }));
     strip.append(card);
