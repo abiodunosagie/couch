@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import TypedDict
 
 from androidtvremote2 import AndroidTVRemote, CannotConnect
+
+import text_input
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
@@ -30,6 +32,9 @@ DEFAULT_PORT = 8765
 PAIRING_CODE = re.compile(r"[0-9A-F]{6}")
 
 log = logging.getLogger("tvremote")
+
+# Google TV only accepts typed text addressed to the focused field; see text_input.py.
+text_input.install()
 
 # Google TV certificates carry a 66 char common name; cryptography warns, the value is still read fine.
 warnings.filterwarnings("ignore", message="Attribute's length must be", category=UserWarning)

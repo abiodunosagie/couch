@@ -1,7 +1,7 @@
-"""Remote control for a Chromecast with Google TV (Android TV Remote v2 protocol).
+"""Couch: remote control for Google TV (Android TV Remote v2 protocol).
 
 Usage:
-    tvremote serve           run the remote app server (the "TV Remote" app does this)
+    tvremote serve           run the helper server (the Couch Mac app starts this)
     tvremote pair            pair this Mac with the TV from Terminal (one time)
     tvremote key HOME ...    send one or more keys and exit
     tvremote text "hello"    type text into the focused field
@@ -133,17 +133,18 @@ async def cmd_status(args: argparse.Namespace) -> None:
 
 
 async def cmd_serve(args: argparse.Namespace) -> None:
-    await serve(args.port, args.host, args.name)
+    await serve(args.port, args.host, args.name, args.parent_pid)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="tvremote", description="Remote control for Google TV.")
+    parser = argparse.ArgumentParser(prog="tvremote", description="Couch: remote control for Google TV.")
     parser.add_argument("--host", help="TV IP address (skips network discovery)")
     parser.add_argument("--name", help="TV name as shown in Google Home, if you have more than one")
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
     serve_parser = sub.add_parser("serve", help="run the remote app server")
     serve_parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    serve_parser.add_argument("--parent-pid", type=int, help="exit when this process exits (set by the Mac app)")
     sub.add_parser("pair", help="pair this Mac with the TV")
     key = sub.add_parser("key", help="send keys, e.g. HOME, DPAD_UP, VOLUME_DOWN")
     key.add_argument("keys", nargs="+")

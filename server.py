@@ -1,17 +1,20 @@
-"""Local web server behind the TV Remote app.
+"""Local helper behind the Couch Mac app.
 
-Holds one connection to the TV and talks to the page over a WebSocket.
+Holds one connection to the TV and talks to the app over a WebSocket.
 Binds to 127.0.0.1 only and checks Host and Origin, so neither other devices on
-the Wi-Fi nor other websites open in the browser can drive the TV.
+the Wi-Fi nor websites open in a browser can drive the TV. When the app starts it,
+COUCH_TOKEN is set and every request must carry that token, so other local
+processes cannot drive the TV either, and the app knows it talks to its own helper.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
+import os
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 
 from aiohttp import WSMsgType, web
@@ -19,20 +22,20 @@ from androidtvremote2 import AndroidTVRemote, CannotConnect, ConnectionClosed, I
 
 from tv import check_pairing_code, find_tv, make_remote
 
-STATIC_DIR = Path(__file__).parent / "static"
+TOKEN_HEADER = "X-Couch-Token"
 RETRY_SECONDS = 5.0
 REDISCOVER_AFTER_SECONDS = 30.0
 MAX_TEXT_LENGTH = 200
 MAX_MESSAGE_BYTES = 4096
+PARENT_CHECK_SECONDS = 5.0
 BAD_MESSAGE = "Bad message."
 TV_UNREACHABLE = "Can't reach the TV. Is it on and on the same Wi-Fi?"
 
 # Only keys that have a button or shortcut on the page can be sent.
 ALLOWED_KEYS = frozenset({
     "DPAD_UP", "DPAD_DOWN", "DPAD_LEFT", "DPAD_RIGHT", "DPAD_CENTER",
-    "BACK", "HOME", "POWER", "SETTINGS", "TV_INPUT", "GUIDE",
-    "VOLUME_UP", "VOLUME_DOWN", "VOLUME_MUTE",
-    "MEDIA_PLAY_PAUSE", "MEDIA_REWIND", "MEDIA_FAST_FORWARD",
+    "BACK", "HOME", "POWER", "TV_INPUT",
+    "VOLUME_UP", "VOLUME_DOWN", "VOLUME_MUTE", "MEDIA_PLAY_PAUSE",
 })
 APP_LINKS = {
     "youtube": "https://www.youtube.com",
@@ -122,11 +125,16 @@ class TVSession:
                 return
             except (CannotConnect, ConnectionClosed, OSError) as exc:
                 log.info("TV not reachable yet: %s", exc)
-                self._set("offline", TV_UNREACHABLE)
+                self._go_offline()
             except Exception:
                 log.exception("unexpected error while connecting")
-                self._set("offline", TV_UNREACHABLE)
+                self._go_offline()
             await asyncio.sleep(RETRY_SECONDS)
+
+    def _go_offline(self) -> None:
+        # Tell the user once, not again on every retry.
+        if self.status != "offline":
+            self._set("offline", TV_UNREACHABLE)
 
     async def _connect_once(self) -> None:
         name, host = await find_tv(self._host_arg, self._name_arg)
@@ -247,9 +255,9 @@ class TVSession:
 # ---------------------------------------------------------------- web app
 
 SESSION = web.AppKey("session", TVSession)
-SHUTDOWN = web.AppKey("shutdown", asyncio.Event)
 ALLOWED_HOSTS = web.AppKey("allowed_hosts", frozenset)
 ALLOWED_ORIGINS = web.AppKey("allowed_origins", frozenset)
+TOKEN = web.AppKey("token", str)
 
 
 @web.middleware
@@ -260,11 +268,10 @@ async def local_only(request: web.Request, handler):
     origin = request.headers.get("Origin")
     if origin is not None and origin not in request.app[ALLOWED_ORIGINS]:
         raise web.HTTPForbidden()
+    token = request.app[TOKEN]
+    if token and not hmac.compare_digest(request.headers.get(TOKEN_HEADER, ""), token):
+        raise web.HTTPForbidden()
     return await handler(request)
-
-
-async def index(_request: web.Request) -> web.FileResponse:
-    return web.FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store"})
 
 
 async def health(_request: web.Request) -> web.Response:
@@ -272,7 +279,8 @@ async def health(_request: web.Request) -> web.Response:
 
 
 async def websocket(request: web.Request) -> web.WebSocketResponse:
-    # Browsers always send Origin on a WebSocket handshake; the middleware has already checked it.
+    # A browser always sends Origin on a WebSocket handshake; requiring it keeps the
+    # browser rule in force even when no token is set (tvremote serve from Terminal).
     if request.headers.get("Origin") is None:
         raise web.HTTPForbidden()
     session = request.app[SESSION]
@@ -287,11 +295,6 @@ async def websocket(request: web.Request) -> web.WebSocketResponse:
     finally:
         session.clients.discard(ws)
     return ws
-
-
-async def quit_app(app: web.Application, _message: dict[str, Any]) -> None:
-    await app[SESSION].broadcast({"type": "closed"})
-    app[SHUTDOWN].set()
 
 
 def _sync(method: Callable[[TVSession, object], None], field: str):
@@ -314,7 +317,6 @@ HANDLERS: dict[str, Callable[[web.Application, dict[str, Any]], Awaitable[None]]
     "app": _sync(TVSession.launch, "app"),
     "pair_start": _pair_start,
     "pair_code": _pair_code,
-    "quit": quit_app,
 }
 
 
@@ -339,28 +341,45 @@ async def handle_message(app: web.Application, ws: web.WebSocketResponse, data: 
         await ws.send_json({"type": "error", "message": "Something went wrong. Try again."})
 
 
-async def serve(port: int, host: str | None, name: str | None) -> None:
+async def exit_when_parent_dies(parent_pid: int, shutdown: asyncio.Event) -> None:
+    """Stop when the Mac app that started us is gone, so no orphan keeps driving the TV."""
+    while not shutdown.is_set():
+        try:
+            os.kill(parent_pid, 0)
+        except ProcessLookupError:
+            log.info("parent app %s exited, shutting down", parent_pid)
+            shutdown.set()
+            return
+        except PermissionError:
+            pass  # exists but owned by someone else; treat as alive
+        await asyncio.sleep(PARENT_CHECK_SECONDS)
+
+
+async def serve(port: int, host: str | None, name: str | None, parent_pid: int | None = None) -> None:
+    if parent_pid is not None and parent_pid <= 0:
+        raise ValueError("--parent-pid must be a real process id")
     # zeroconf logs a full traceback for every interface without a route (VPN, Thunderbolt bridge).
     logging.getLogger("zeroconf").setLevel(logging.ERROR)
     session = TVSession(host, name)
     shutdown = asyncio.Event()
     app = web.Application(middlewares=[local_only])
     app[SESSION] = session
-    app[SHUTDOWN] = shutdown
     app[ALLOWED_HOSTS] = frozenset({f"127.0.0.1:{port}", f"localhost:{port}"})
     app[ALLOWED_ORIGINS] = frozenset({f"http://127.0.0.1:{port}", f"http://localhost:{port}"})
-    app.router.add_get("/", index)
+    app[TOKEN] = os.environ.get("COUCH_TOKEN", "")
     app.router.add_get("/health", health)
     app.router.add_get("/ws", websocket)
-    app.router.add_static("/static", STATIC_DIR, show_index=False)
 
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", port).start()
-    log.info("TV Remote running at http://127.0.0.1:%s", port)
+    log.info("Couch helper listening on 127.0.0.1:%s", port)
     session.start()
+    watchdog = asyncio.create_task(exit_when_parent_dies(parent_pid, shutdown)) if parent_pid else None
     try:
         await shutdown.wait()
     finally:
+        if watchdog:
+            watchdog.cancel()
         session.close()
         await runner.cleanup()
