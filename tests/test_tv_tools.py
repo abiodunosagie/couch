@@ -36,6 +36,9 @@ def test_tweak_values_are_fixed():
     for tweak in TWEAKS.values():
         assert tweak.namespace in {"global", "system", "secure"}
         assert all(value.replace(".", "").isdigit() for _choice, _label, value in tweak.choices)
+
+
+def test_tweak_lookups():
     assert TWEAKS["screensaver_after"].choice("600000") == "10"
     assert TWEAKS["animations"].choice("0.5") == "fast"
     assert TWEAKS["sleep_after"].choice("12345") == "custom"
@@ -68,3 +71,22 @@ def test_home_package():
         "com.google.android.apps.tv.launcherx"
     assert home_package("No activity found\n") is None
     assert home_package("") is None
+
+
+def test_two_quick_tweaks_keep_both_originals(tmp_path, monkeypatch):
+    import asyncio
+    import apps
+    monkeypatch.setattr(tv_tools, "ORIGINALS_FILE", tmp_path / "originals.json")
+    manager = apps.AppsManager(lambda: None)
+
+    async def shell(*commands, timeout=None):
+        await asyncio.sleep(0)  # let the other request run in between, as on a real TV
+        return ["1.0" if "animation" in c or "animator" in c else "600000" for c in commands]
+
+    manager.shell = shell
+    tools = tv_tools.TVTools(manager)
+
+    async def both():
+        await asyncio.gather(tools.set_tweak("animations", "fast"), tools.set_tweak("screensaver_after", "5"))
+    asyncio.run(both())
+    assert set(tv_tools._load_originals()) == WRITABLE - {"secure/sleep_timeout"}

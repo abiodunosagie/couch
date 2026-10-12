@@ -8,6 +8,7 @@ import server
 from apps import AppsStatus
 from errors import UserError
 from handlers_apps import APPS_HANDLERS
+from tv import KNOWN_APPS
 
 
 RECENTS = [{"package": "com.example.player", "inactive": 125, "live": True}]
@@ -71,7 +72,73 @@ def test_resume_refuses_apps_not_in_the_list():
         session.apps.recents = recents
         session.apps.launch = launch
         await APPS_HANDLERS["resume"](session, None, {"package": "com.example.player"})
-        with pytest.raises(UserError):
+        await APPS_HANDLERS["resume"](session, None, {"package": "com.netflix.ninja"})  # known, not recent
+        with pytest.raises(UserError, match="not in the recent list"):
             await APPS_HANDLERS["resume"](session, None, {"package": "com.android.shell"})
         return launched
-    assert asyncio.run(check()) == ["com.example.player"]
+    assert "com.netflix.ninja" in KNOWN_APPS
+    assert asyncio.run(check()) == ["com.example.player", "com.netflix.ninja"]
+
+
+def test_a_socket_cannot_queue_endless_app_requests(monkeypatch):
+    async def check():
+        session = server.TVSession(None, None)
+        gate = asyncio.Event()
+        started = []
+
+        async def slow(_session, _ws, _message):
+            started.append(1)
+            await gate.wait()
+
+        monkeypatch.setitem(server.HANDLERS, "recents", slow)
+        sent = []
+
+        class Socket:
+            async def send_json(self, message):
+                sent.append(message)
+
+        ws = Socket()
+        for _ in range(server.MAX_PENDING_APPS_REQUESTS + 2):
+            await server.handle_message(session, server.HANDLERS, ws, '{"type": "recents"}')
+        await asyncio.sleep(0)
+        busy = [m for m in sent if m.get("type") == "error"]
+        gate.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return len(started), len(busy), session.pending
+    started, busy, pending = asyncio.run(check())
+    assert (started, busy, pending) == (server.MAX_PENDING_APPS_REQUESTS, 2, {})
+
+
+def test_unknown_sockets_get_the_phone_list():
+    async def check():
+        session = server.TVSession(None, None)
+        session.apps.status = AppsStatus.READY
+
+        async def recents():
+            return RECENTS
+
+        session.apps.recents = recents
+        return await session.recents_for(object())
+    assert "when" not in asyncio.run(check())["apps"][0]
+
+
+def test_a_failed_lookup_keeps_the_strip():
+    async def check():
+        session = server.TVSession(None, None)
+        session.apps.status = AppsStatus.READY
+
+        async def recents():
+            raise server.AppsError("The TV took too long to answer. Try again.")
+
+        session.apps.recents = recents
+        sent = []
+
+        class Socket:
+            async def send_json(self, message):
+                sent.append(message)
+
+        session.clients.add(Socket())
+        await session.push_recents()
+        return sent
+    assert asyncio.run(check()) == []

@@ -39,6 +39,9 @@ MAX_MESSAGE_BYTES = 65536
 PARENT_CHECK_SECONDS = 5.0
 MAX_PHONES = 6
 APPS_RELINK_SECONDS = 60.0
+# Slow app manager requests one socket may have running at once; more get "busy", so a phone
+# cannot queue endless commands on the TV's single adb line.
+MAX_PENDING_APPS_REQUESTS = 4
 RECENTS_SETTLE_SECONDS = 1.5
 # A held voice button that never sends "voice_end" (app crashed) must not keep the TV listening.
 MAX_VOICE_SECONDS = 20.0
@@ -112,6 +115,7 @@ class TVSession:
         self._relinker: asyncio.Task[None] | None = None
         self._recents_timer: asyncio.TimerHandle | None = None
         self._recents_round = 0  # the newest recent list wins when two lookups overlap
+        self.pending: dict[web.WebSocketResponse, int] = {}  # running app manager requests per socket
         self.installing = False
 
     # ------------------------------------------------------------ state
@@ -189,23 +193,26 @@ class TVSession:
                      "when": ago(item["inactive"])} for item in recents]
         return {"type": "recents", "apps": apps}
 
-    async def _fetch_recents(self) -> list[dict]:
+    async def _fetch_recents(self) -> list[dict] | None:
+        """The recent list; empty without the app manager, None when the lookup failed."""
         if self.apps.status != AppsStatus.READY:
             return []
         try:
             return await self.apps.recents()
         except AppsError:
-            return []  # the link dropped; that status change is already sent
+            return None
 
-    async def recents_for(self, ws: web.WebSocketResponse) -> dict[str, Any]:
-        return self.recents_message(await self._fetch_recents(), for_phone=ws in self.phone_clients)
+    async def recents_for(self, ws: web.WebSocketResponse) -> dict[str, Any] | None:
+        recents = await self._fetch_recents()
+        # Only a known Mac socket gets the full list; anything else is treated as a phone.
+        return None if recents is None else self.recents_message(recents, for_phone=ws not in self.clients)
 
     async def push_recents(self) -> None:
         self._recents_round += 1
         round_ = self._recents_round
         recents = await self._fetch_recents()
-        if round_ != self._recents_round:
-            return  # a newer lookup started meanwhile; it sends the fresher list
+        if recents is None or round_ != self._recents_round:
+            return  # failed (pages keep what they show), or a newer lookup sends the fresher list
         await self._send_all(self.clients, self.recents_message(recents, for_phone=False))
         await self._send_all(self.phone_clients, self.recents_message(recents, for_phone=True))
 
@@ -652,13 +659,28 @@ async def handle_message(session: TVSession, handlers: dict[str, Handler], ws: w
     kind = message.get("type") if isinstance(message, dict) else None
     handler = handlers.get(kind) if isinstance(kind, str) else None
     if handler is None:
-        await reply(ws, {"type": "error", "message": BAD_MESSAGE, "for": None})
+        await reply(ws, {"type": "error", "message": BAD_MESSAGE})
         return
-    run = run_handler(session, handler, ws, message, kind)
-    if kind in APPS_HANDLERS:
-        session.spawn(run)  # adb can take minutes; keep this socket's keys and voice flowing
-    else:
-        await run
+    if kind not in APPS_HANDLERS:
+        await run_handler(session, handler, ws, message, kind)
+        return
+    # adb can take minutes; run it beside the read loop so this socket's keys and voice keep flowing.
+    if session.pending.get(ws, 0) >= MAX_PENDING_APPS_REQUESTS:
+        await reply(ws, {"type": "error", "message": "The TV is still busy. Try again in a moment.", "for": kind})
+        return
+    session.pending[ws] = session.pending.get(ws, 0) + 1
+
+    async def run() -> None:
+        try:
+            await run_handler(session, handler, ws, message, kind)
+        finally:
+            left = session.pending.get(ws, 1) - 1
+            if left > 0:
+                session.pending[ws] = left
+            else:
+                session.pending.pop(ws, None)
+
+    session.spawn(run())
 
 
 async def run_handler(session: TVSession, handler: Handler, ws: web.WebSocketResponse,

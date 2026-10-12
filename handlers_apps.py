@@ -27,7 +27,8 @@ Handler = Callable[["TVSession", web.WebSocketResponse, dict[str, Any]], Awaitab
 
 
 async def reply(ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
-    """Send to one client that may have closed while a slow command ran."""
+    """Send to one client that may have closed while a slow command ran (aiohttp raises
+    ConnectionError, or RuntimeError for a socket already closing)."""
     try:
         await ws.send_json(message)
     except (ConnectionError, RuntimeError):
@@ -45,10 +46,10 @@ def apps_handler(handler: Handler) -> Handler:
     return wrapped
 
 
-def _app_manager(session: TVSession) -> AppsManager:
+def _app_manager(session: TVSession, needed_for: str = "This") -> AppsManager:
     session.require_connected()
     if session.apps.status != AppsStatus.READY:
-        raise UserError("This needs the TV's app manager. Connect it in Apps first.")
+        raise UserError(f"{needed_for} needs the TV's app manager. Connect it in Apps first.")
     return session.apps
 
 
@@ -87,17 +88,16 @@ async def _apps_uninstall(session: TVSession, ws: web.WebSocketResponse, message
 
 @apps_handler
 async def _open_settings(session: TVSession, _ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
-    session.require_connected()
-    if session.apps.status != AppsStatus.READY:
-        raise UserError("One click Settings needs the TV's app manager. Connect it in Apps first.")
-    await session.apps.open_settings()
+    await _app_manager(session, "One click Settings").open_settings()
 
 
 # ---------------------------------------------------------------- recent apps
 
 async def _recents(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
     # The phone asks on every connect, also before the app manager is up: no error then.
-    await reply(ws, await session.recents_for(ws))
+    message = await session.recents_for(ws)
+    if message is not None:
+        await reply(ws, message)
 
 
 @apps_handler
@@ -157,7 +157,10 @@ async def _free_memory(session: TVSession, _message: dict[str, Any]) -> str:
     current = session.remote.current_app if session.remote else None
     stopped = await session.tools.free_memory(current)
     await session.push_recents()
-    return f"Stopped {stopped} app{'s' if stopped != 1 else ''} in the background." if stopped else "Nothing else was running."
+    if not stopped:
+        return "Nothing else was running."
+    apps = "1 app" if stopped == 1 else f"{stopped} apps"
+    return f"Stopped {apps} in the background."
 
 
 async def _home_suggest(session: TVSession, _message: dict[str, Any]) -> str:
@@ -171,29 +174,31 @@ async def _home_set(session: TVSession, message: dict[str, Any]) -> str:
 
 
 async def _install(session: TVSession, ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
-    """One install at a time; the result always reaches the Mac, even when something unexpected fails."""
+    """One install at a time. The result goes to every Mac window (it may have reconnected
+    meanwhile), even when something unexpected fails."""
     _app_manager(session)
     if session.installing:
         raise UserError("An app is already installing. Wait for it to finish.")
     session.installing = True
     try:
-        await reply(ws, {"type": "install", "state": "installing"})
+        await session.broadcast({"type": "install", "state": "installing"})
         try:
             name = await session.tools.install(message.get("path"))
         except AppsError as exc:
-            await reply(ws, {"type": "install", "state": "failed", "message": str(exc)})
+            await session.broadcast({"type": "install", "state": "failed", "message": str(exc)})
             return
         except Exception:
             log.exception("install failed")
-            await reply(ws, {"type": "install", "state": "failed", "message": "Couch could not install that app."})
+            await session.broadcast({"type": "install", "state": "failed", "message": "Couch could not install that app."})
             return
-        await reply(ws, {"type": "install", "state": "done", "message": f"Installed {name} on the TV."})
+        await session.broadcast({"type": "install", "state": "done", "message": f"Installed {name} on the TV."})
     finally:
         session.installing = False
     await session.refresh_apps()
 
 
 # Installed apps, recent apps and TV upgrades. The server runs all of these off the read loop.
+# Phones reach only the few that server.PHONE_HANDLERS picks (recents, resume, open_settings).
 APPS_HANDLERS: dict[str, Handler] = {
     "apps_connect": _apps_connect,
     "apps_pair": _apps_pair,

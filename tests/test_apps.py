@@ -1,7 +1,11 @@
 """adb output parsing, from real output of Google's adb against a Chromecast with Google TV."""
 
-from apps import AppsError, check_package, connected, paired, parse_packages
+import asyncio
+
 import pytest
+
+import apps
+from apps import AppsError, check_package, connected, paired, parse_packages
 
 
 def test_connect_output():
@@ -80,9 +84,9 @@ def test_task_ids_for_close():
 
 
 def _ready_manager(answers):
-    import apps
     manager = apps.AppsManager(lambda: None)
     manager.status = apps.AppsStatus.READY
+    manager.link_dropped = False  # a live link; independent of this machine's real pairing file
     manager._serial = "192.0.2.5:5555"
 
     async def fake_adb(*args, timeout=apps.COMMAND_TIMEOUT_SECONDS):
@@ -96,17 +100,13 @@ def _ready_manager(answers):
 
 
 def test_a_slow_command_keeps_the_link():
-    import asyncio
-    import apps
     manager = _ready_manager({"pm trim-caches 999G": apps.AppsTimeout("slow"), "get-state": "device\n"})
-    with pytest.raises(AppsError, match="still working"):
+    with pytest.raises(AppsError, match="too long"):
         asyncio.run(manager.shell("pm trim-caches 999G"))
     assert manager.status == apps.AppsStatus.READY and not manager.link_dropped
 
 
 def test_a_gone_tv_drops_the_link():
-    import asyncio
-    import apps
     manager = _ready_manager({"pm trim-caches 999G": apps.AppsTimeout("slow"), "get-state": "error: device offline\n"})
     with pytest.raises(AppsError, match="Lost the connection"):
         asyncio.run(manager.shell("pm trim-caches 999G"))
@@ -114,8 +114,6 @@ def test_a_gone_tv_drops_the_link():
 
 
 def test_install_notices_a_lost_device():
-    import asyncio
-    import apps
     manager = _ready_manager({"/x.apk": "adb: device offline\n"})
     with pytest.raises(AppsError, match="Lost the connection"):
         asyncio.run(manager.device_command("install", "-r", "/x.apk", timeout=5))

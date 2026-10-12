@@ -135,10 +135,7 @@ function renderMirror() {
 
 // ------------------------------------------------------------ recent apps
 
-let recents = [];
-
 function renderRecents(apps) {
-  recents = apps;
   const strip = $("recents");
   strip.replaceChildren();
   strip.hidden = apps.length === 0;

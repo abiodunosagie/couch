@@ -7,6 +7,7 @@ TV's own value is saved the first time Couch changes it, so Reset puts the TV ba
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -154,6 +155,8 @@ def install_result(output: str) -> str | None:
 class TVTools:
     def __init__(self, apps: AppsManager) -> None:
         self.apps = apps
+        # Requests run side by side, and changing a setting reads, then rewrites, the saved values.
+        self._tweak_lock = asyncio.Lock()
 
     # ------------------------------------------------------------ install
 
@@ -196,8 +199,9 @@ class TVTools:
         value = tweak.value(choice)
         if value is None:
             raise AppsError("That value is not allowed.")
-        await self._remember_originals(tweak)
-        await self.apps.shell(*(f"settings put {tweak.namespace} {key} {shlex.quote(value)}" for key in tweak.keys))
+        async with self._tweak_lock:
+            await self._remember_originals(tweak)
+            await self.apps.shell(*(f"settings put {tweak.namespace} {key} {shlex.quote(value)}" for key in tweak.keys))
 
     async def _remember_originals(self, tweak: Tweak) -> None:
         """Save the TV's own values the first time Couch changes them, so Reset can put them back."""
@@ -217,6 +221,10 @@ class TVTools:
 
     async def reset_tweaks(self) -> None:
         """Put back every setting Couch changed, exactly as the TV had it."""
+        async with self._tweak_lock:
+            await self._reset_tweaks()
+
+    async def _reset_tweaks(self) -> None:
         commands = []
         for entry, value in _load_originals().items():
             namespace, key = entry.split("/", 1)  # only WRITABLE entries are loaded

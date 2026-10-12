@@ -21,6 +21,7 @@ import re
 import shlex
 import shutil
 from collections.abc import Callable
+from typing import TypeGuard
 from pathlib import Path
 
 from tv import CONFIG_DIR, ensure_config_dir
@@ -85,14 +86,14 @@ class AppsTimeout(AppsError):
     """adb gave up waiting. The TV may only be slow, so this alone does not mean the link is gone."""
 
 
-def is_package(package: object) -> bool:
+def is_package(package: object) -> TypeGuard[str]:
     return isinstance(package, str) and len(package) <= MAX_PACKAGE_LENGTH and PACKAGE_NAME.fullmatch(package) is not None
 
 
 def check_package(package: object) -> str:
     if not is_package(package):
         raise AppsError("That is not an app name.")
-    return package  # type: ignore[return-value]
+    return package
 
 
 def parse_packages(output: str) -> list[str]:
@@ -238,9 +239,10 @@ class AppsManager:
         self._lock = asyncio.Lock()  # one adb command at a time
         self._installed: set[str] = set()
         self._server_started = False
-        # True after a working link dropped (TV restart, new port): only then does Couch reconnect
-        # by itself. A refusal or a missing pairing waits for the user.
-        self.link_dropped = False
+        # True when a link worked before (this run or an earlier one) and is not up now, as after a
+        # TV restart: only then does Couch reconnect by itself. A refusal or a missing pairing waits
+        # for the user.
+        self.link_dropped = self.was_linked()
 
     @staticmethod
     def was_linked() -> bool:
@@ -412,17 +414,19 @@ class AppsManager:
         adb's own errors ("error: device offline") mean the link is gone. A timeout alone does
         not: Free Up Space or an install can be slow, so ask the TV whether it is still there.
         """
-        if self.status != AppsStatus.READY or not self._serial:
-            raise AppsError("Couch is not connected to the TV's app manager.")
-        serial = self._serial
         results = []
         async with self._lock:
+            # Checked under the lock: a command that waited behind an install must not use a link
+            # that dropped, or an old port, meanwhile.
+            if self.status != AppsStatus.READY or not self._serial:
+                raise AppsError("Couch is not connected to the TV's app manager.")
+            serial = self._serial
             try:
                 for args in commands:
                     results.append(await self._adb("-s", serial, *args, timeout=timeout))
             except AppsTimeout:
                 if await self._still_there(serial):
-                    raise AppsError("The TV is still working on it. Check again in a moment.") from None
+                    raise AppsError("The TV took too long to answer. Try again.") from None
                 self._link_lost()
             except AppsError:
                 self._link_lost()
