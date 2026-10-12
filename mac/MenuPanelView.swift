@@ -32,6 +32,11 @@ struct MenuPanelView: View {
                 Button { model.typing.toggle() } label: { Image(systemName: "keyboard") }
                     .buttonStyle(.borderless)
                     .help("Type on the TV (/)")
+                Button("Quit", action: quit)
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .help("Quit Couch")
                 Menu {
                     Button("Open Couch Window", action: openWindow)
                     Button("Send Clipboard Link to TV") { model.sendClipboardLink() }

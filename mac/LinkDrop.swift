@@ -5,6 +5,8 @@ import AppKit
 final class LinkDropView: NSView {
     var onLink: ((URL) -> Void)?
     var onClick: (() -> Void)?
+    /// Right click, or Control click: the icon's menu (open the window, quit).
+    var onMenu: ((NSView) -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -17,9 +19,15 @@ final class LinkDropView: NSView {
         // Command drag rearranges menu bar icons; leave that to the icon underneath.
         if event.modifierFlags.contains(.command) {
             superview?.mouseDown(with: event)
+        } else if event.modifierFlags.contains(.control) {
+            onMenu?(self)
         } else {
             onClick?()
         }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onMenu?(self)
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {

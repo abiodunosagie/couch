@@ -157,6 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             drop.autoresizingMask = [.width, .height]
             drop.onLink = { [weak self] url in self?.model.sendLink(url) }
             drop.onClick = { [weak self] in self?.togglePanel() }
+            drop.onMenu = { [weak self] view in self?.showIconMenu(below: view) }
             button.addSubview(drop)
         }
 
@@ -220,6 +221,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ]
         shortcuts = GlobalShortcuts(list)
         model.unavailableShortcuts = shortcuts?.unavailable ?? []
+    }
+
+    /// The menu bar icon's own menu, like every menu bar app: open the window or quit.
+    private func showIconMenu(below view: NSView) {
+        menuPanel?.close()
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Open Couch", action: #selector(showWindow), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Show Remote", action: #selector(togglePanel), keyEquivalent: "").target = self
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit Couch", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: view)  // just under the icon
     }
 
     @objc func togglePanel() {
