@@ -4,6 +4,12 @@ import SwiftUI
 struct MainWindowView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var client: RemoteClient
+    @State private var tab = Tab.remote
+
+    private enum Tab: String, CaseIterable {
+        case remote = "Remote"
+        case automation = "Automation"
+    }
 
     init(model: AppModel) {
         self.model = model
@@ -13,6 +19,7 @@ struct MainWindowView: View {
     var body: some View {
         HStack(alignment: .center, spacing: 56) {
             RemoteView(client: client, voice: model.voice, finish: model.finish)
+                .trackpadZone(model)
                 .padding(.vertical, 36)
 
             VStack(alignment: .leading, spacing: 26) {
@@ -25,7 +32,16 @@ struct MainWindowView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if client.state.needsPairing {
+                Picker("", selection: $tab) {
+                    ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 240)
+
+                if tab == .automation {
+                    AutomationView(automations: model.automations, scenes: model.scenes, favourites: model.favourites)
+                } else if client.state.needsPairing {
                     PairingForm(client: client)
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
@@ -53,8 +69,10 @@ struct MainWindowView: View {
                     .foregroundStyle(.orange)
                     .animation(.easeOut(duration: 0.15), value: client.toast)
 
-                Shortcuts()
-                if !model.unavailableShortcuts.isEmpty {
+                if tab == .remote {
+                    Shortcuts()
+                }
+                if tab == .remote && !model.unavailableShortcuts.isEmpty {
                     Text("Taken by another app: \(model.unavailableShortcuts.joined(separator: ", ")).")
                         .font(.caption)
                         .foregroundStyle(.orange)

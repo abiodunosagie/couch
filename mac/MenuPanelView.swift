@@ -32,6 +32,20 @@ struct MenuPanelView: View {
                 Menu {
                     Button("Open Couch Window", action: openWindow)
                     Button("Send Clipboard Link to TV") { model.sendClipboardLink() }
+                    Menu("Sleep Timer") {
+                        ForEach(AutomationView.sleepChoices, id: \.self) { minutes in
+                            Button("\(minutes) minutes") { model.automations.startSleepTimer(minutes: minutes) }
+                        }
+                        if model.automations.sleepAt != nil {
+                            Divider()
+                            Button("Cancel Timer") { model.automations.cancelSleepTimer() }
+                        }
+                    }
+                    Menu("Run Scene") {
+                        ForEach(model.scenes.scenes) { scene in
+                            Button(scene.name) { model.scenes.run(scene) }
+                        }
+                    }
                     Picker("Finish", selection: $model.finish) {
                         ForEach(Finish.allCases) { Text($0.label).tag($0) }
                     }
@@ -58,6 +72,7 @@ struct MenuPanelView: View {
                     .scaleEffect(model.panelScale)
                     .frame(width: RemoteView.size.width * model.panelScale,
                            height: RemoteView.size.height * model.panelScale)
+                    .trackpadZone(model)
             }
 
             if let toast = client.toast {

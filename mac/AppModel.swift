@@ -9,6 +9,8 @@ final class AppModel: ObservableObject {
     let client: RemoteClient
     let voice: VoiceInput
     let favourites: Favourites
+    let automations: Automations
+    let scenes: Scenes
 
     @Published var finish: Finish {
         didSet { UserDefaults.standard.set(finish.rawValue, forKey: "finish") }
@@ -38,6 +40,9 @@ final class AppModel: ObservableObject {
     /// Size of the remote in the menu bar panel, chosen so the panel fits the screen.
     @Published var panelScale: CGFloat = 0.74
     @Published private(set) var startFailed = false
+    /// Where the remote sits in each window (by window number), for trackpad swipes. Not published:
+    /// it changes on every layout and nothing redraws from it.
+    var remoteZones: [Int: CGRect] = [:]
     /// Global shortcuts another app already owns.
     @Published var unavailableShortcuts: [String] = []
 
@@ -47,6 +52,8 @@ final class AppModel: ObservableObject {
         client = RemoteClient(token: helper.token)
         voice = VoiceInput(client: client)
         favourites = Favourites(client: client)
+        automations = Automations(client: client, voice: voice, favourites: favourites)
+        scenes = Scenes(client: client, automations: automations, favourites: favourites)
         finish = Finish(rawValue: UserDefaults.standard.string(forKey: "finish") ?? "") ?? .snow
         launchAtLogin = LoginItem.isEnabled
         client.onLinkLost = { [weak self] in

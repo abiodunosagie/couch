@@ -3,7 +3,7 @@ import Carbon.HIToolbox
 
 /// Remote buttons. Raw values are Android key names and must stay in step with
 /// ALLOWED_KEYS in server.py, which refuses anything else.
-enum RemoteKey: String {
+enum RemoteKey: String, Codable, CaseIterable {
     case up = "DPAD_UP"
     case down = "DPAD_DOWN"
     case left = "DPAD_LEFT"
@@ -17,6 +17,29 @@ enum RemoteKey: String {
     case volumeDown = "VOLUME_DOWN"
     case mute = "VOLUME_MUTE"
     case playPause = "MEDIA_PLAY_PAUSE"
+    case pause = "MEDIA_PAUSE"
+    case play = "MEDIA_PLAY"
+
+    /// Name shown in scene steps.
+    var title: String {
+        switch self {
+        case .up: "Up"
+        case .down: "Down"
+        case .left: "Left"
+        case .right: "Right"
+        case .select: "Select"
+        case .back: "Back"
+        case .home: "Home"
+        case .power: "Power"
+        case .input: "Input"
+        case .volumeUp: "Volume up"
+        case .volumeDown: "Volume down"
+        case .mute: "Mute"
+        case .playPause: "Play or pause"
+        case .pause: "Pause"
+        case .play: "Play"
+        }
+    }
 
     /// Keys that repeat while held, like on the physical remote; the rest fire once per press.
     var repeats: Bool {

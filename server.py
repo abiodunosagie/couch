@@ -42,6 +42,8 @@ ALLOWED_KEYS = frozenset({
     "DPAD_UP", "DPAD_DOWN", "DPAD_LEFT", "DPAD_RIGHT", "DPAD_CENTER",
     "BACK", "HOME", "POWER", "TV_INPUT",
     "VOLUME_UP", "VOLUME_DOWN", "VOLUME_MUTE", "MEDIA_PLAY_PAUSE",
+    # Explicit pause and play, so automations never resume when they meant to pause.
+    "MEDIA_PAUSE", "MEDIA_PLAY",
 })
 APP_LINKS = {
     "youtube": "https://www.youtube.com",

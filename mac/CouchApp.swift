@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var stateWatch: AnyCancellable?
     private var window: NSWindow?
     private var keyRouter: KeyRouter?
+    private var trackpad: TrackpadRouter?
 
     override init() {
         model = AppModel()
@@ -44,6 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             isPanel: { [weak self] in $0 === self?.menuPanel?.window },
             closePanel: { [weak self] in self?.menuPanel?.close() })
         keyRouter?.install()
+        trackpad = TrackpadRouter(model: model)
+        trackpad?.install()
         Task { await model.start() }
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(showWindow), name: Self.showWindowNotification, object: nil)
