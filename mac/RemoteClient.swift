@@ -56,6 +56,19 @@ private struct Envelope: Decodable {
     let `for`: String?
 }
 
+/// The TV's settings Couch can change, plus space, memory and home screen.
+struct TVTools: Decodable, Equatable {
+    struct Amount: Decodable, Equatable {
+        let total: Int
+        let free: Int
+    }
+    let tweaks: [String: String]
+    let changed: [String]
+    let storage: Amount?
+    let memory: Amount?
+    let home: String?
+}
+
 /// An app in the TV's recent list.
 struct RecentApp: Decodable, Equatable, Identifiable {
     let package: String
@@ -69,6 +82,11 @@ struct RecentApp: Decodable, Equatable, Identifiable {
 
 private struct RecentsMessage: Decodable {
     let apps: [RecentApp]
+}
+
+private struct InstallMessage: Decodable {
+    let state: String
+    let message: String?
 }
 
 private struct PackageMessage: Decodable {
@@ -127,6 +145,8 @@ final class RemoteClient: ObservableObject {
     /// Apps the user installed on the TV, by package, once the app manager is ready.
     @Published private(set) var installedApps: [String] = []
     @Published private(set) var recentApps: [RecentApp] = []
+    @Published private(set) var tvTools: TVTools?
+    @Published private(set) var installing = false
 
     /// Called when the link drops, before reconnecting. Lets the app restart the helper.
     var onLinkLost: (() async -> Void)?
@@ -202,6 +222,14 @@ final class RemoteClient: ObservableObject {
                     connectingApps = false
                 }
             }
+        case "tv_tools":
+            tvTools = try? JSONDecoder().decode(TVTools.self, from: data)
+        case "notice":
+            if let text = envelope.message { show(text) }
+        case "install":
+            let state = (try? JSONDecoder().decode(InstallMessage.self, from: data))
+            installing = state?.state == "installing"
+            if let text = state?.message { show(text) }
         case "recents":
             recentApps = (try? JSONDecoder().decode(RecentsMessage.self, from: data))?.apps ?? recentApps
         case "apps_launched":
@@ -249,6 +277,8 @@ final class RemoteClient: ObservableObject {
         appsLink = .unknown
         installedApps = []
         recentApps = []
+        tvTools = nil
+        installing = false
         connectingApps = false
         if listening { onListeningEnded?() }
         listening = false
@@ -349,6 +379,20 @@ final class RemoteClient: ObservableObject {
     }
     func refreshApps() { send(["type": "apps_list"]) }
     func refreshRecents() { send(["type": "recents"]) }
+
+    // MARK: TV upgrades (app manager)
+
+    func refreshTools() { send(["type": "tools_status"]) }
+    func setTweak(_ name: String, _ choice: String) { send(["type": "tweak", "name": name, "choice": choice]) }
+    func resetTweaks() { send(["type": "tweaks_reset"]) }
+    func freeSpace() { send(["type": "free_space"]) }
+    func freeMemory() { send(["type": "free_memory"]) }
+    func suggestHome() { send(["type": "home_suggest"]) }
+    func setHome(_ package: String) { send(["type": "home_set", "package": package]) }
+    func install(_ file: URL) {
+        guard requireConnected() else { return }
+        send(["type": "install_apk", "path": file.path])
+    }
 
     /// Bring a recent app back to the front, where it was.
     func resume(_ package: String) {

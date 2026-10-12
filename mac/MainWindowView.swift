@@ -9,6 +9,7 @@ struct MainWindowView: View {
     private enum Tab: String, CaseIterable {
         case remote = "Remote"
         case automation = "Automation"
+        case tv = "TV"
         case phone = "Phone"
     }
 
@@ -38,10 +39,13 @@ struct MainWindowView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 300)
+                .frame(width: 340)
 
                 if tab == .phone {
                     PhoneView(client: client)
+                } else if tab == .tv {
+                    ScrollView { TVToolsView(client: client).frame(maxWidth: .infinity, alignment: .leading) }
+                        .frame(maxHeight: 520)
                 } else if tab == .automation {
                     AutomationView(automations: model.automations, scenes: model.scenes, favourites: model.favourites)
                 } else if client.state.needsPairing {

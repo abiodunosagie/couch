@@ -24,6 +24,7 @@ from androidtvremote2.remote import VOICE_CHUNK_MIN_SIZE
 
 from apps import AppsError, AppsManager, AppsStatus
 from phone import PhoneAccess
+from tv_tools import TVTools
 from text_input import EDIT_KEYS, NAVIGATION_KEYS, FieldTrackingProtocol
 from tv import KNOWN_APPS, app_name, check_pairing_code, find_tv, make_remote
 
@@ -95,6 +96,7 @@ class TVSession:
         self._voice_timeout: asyncio.TimerHandle | None = None
         self.phone: PhoneAccess  # set by serve()
         self.apps = AppsManager(on_status=self._apps_changed)
+        self.tools = TVTools(self.apps)
         self._last_apps_status = AppsStatus.UNKNOWN
         self._relinker: asyncio.Task[None] | None = None
         self._recents_timer: asyncio.TimerHandle | None = None
@@ -605,6 +607,9 @@ def _app_manager(session: TVSession) -> AppsManager:
 
 
 async def _recents(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    if session.apps.status != AppsStatus.READY:
+        await ws.send_json(session.recents_message([]))  # the phone asks on every connect; no error
+        return
     try:
         recents = await _app_manager(session).recents()
     except AppsError as exc:
@@ -626,6 +631,78 @@ async def _close_app(session: TVSession, _ws: web.WebSocketResponse, message: di
     except AppsError as exc:
         raise UserError(str(exc)) from None
     await session.push_recents()
+
+
+async def _tools_status(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    _app_manager(session)
+    try:
+        await ws.send_json(await session.tools.status())
+    except AppsError as exc:
+        raise UserError(str(exc)) from None
+
+
+def _tool(action):
+    """A Mac only TV upgrade: runs `action`, then sends the fresh status."""
+    async def handler(session: TVSession, ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+        _app_manager(session)
+        try:
+            notice = await action(session, message)
+            await ws.send_json(await session.tools.status())
+        except AppsError as exc:
+            raise UserError(str(exc)) from None
+        if notice:
+            await ws.send_json({"type": "notice", "message": notice})
+    return handler
+
+
+async def _tweak(session: TVSession, message: dict[str, Any]) -> str | None:
+    await session.tools.set_tweak(message.get("name"), message.get("choice"))
+    return None
+
+
+async def _reset(session: TVSession, _message: dict[str, Any]) -> str:
+    await session.tools.reset_tweaks()
+    return "The TV settings are back the way they were."
+
+
+async def _free_space(session: TVSession, _message: dict[str, Any]) -> str:
+    await session.tools.free_space()
+    return "Cleared app caches on the TV."
+
+
+async def _free_memory(session: TVSession, _message: dict[str, Any]) -> str:
+    current = session.remote.current_app if session.remote else None
+    stopped = await session.tools.free_memory(current)
+    await session.push_recents()
+    return f"Stopped {stopped} app{'s' if stopped != 1 else ''} in the background." if stopped else "Nothing else was running."
+
+
+async def _home_suggest(session: TVSession, _message: dict[str, Any]) -> str:
+    await session.tools.suggest_home()
+    return "The Play Store page is open on the TV. Install it there, then choose it here."
+
+
+async def _home_set(session: TVSession, message: dict[str, Any]) -> str:
+    await session.tools.set_home(message.get("package"))
+    return "Home screen changed."
+
+
+async def _install(session: TVSession, ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    """Installing can take minutes; run it in the background and report when done."""
+    _app_manager(session)
+    path = message.get("path")
+
+    async def run() -> None:
+        await ws.send_json({"type": "install", "state": "installing"})
+        try:
+            name = await session.tools.install(path)
+        except AppsError as exc:
+            await ws.send_json({"type": "install", "state": "failed", "message": str(exc)})
+            return
+        await ws.send_json({"type": "install", "state": "done", "message": f"Installed {name} on the TV."})
+        await session.refresh_apps()
+
+    session.spawn(run())
 
 
 async def _open_settings(session: TVSession, _ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
@@ -684,6 +761,14 @@ HANDLERS: dict[str, Handler] = {
     "recents": _recents,
     "resume": _resume,
     "close_app": _close_app,
+    "tools_status": _tools_status,
+    "tweak": _tool(_tweak),
+    "tweaks_reset": _tool(_reset),
+    "free_space": _tool(_free_space),
+    "free_memory": _tool(_free_memory),
+    "home_suggest": _tool(_home_suggest),
+    "home_set": _tool(_home_set),
+    "install_apk": _install,
     "apps_list": _apps_list,
     "apps_launch": _apps_launch,
     "apps_uninstall": _apps_uninstall,

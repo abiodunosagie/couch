@@ -56,11 +56,13 @@ function connect() {
     let message;
     try { message = JSON.parse(event.data); } catch { return; }
     if (message.type === "state") render(message);
+    else if (message.type === "recents") renderRecents(message.apps || []);
     else if (message.type === "error") toast(message.message);
   });
   ws.addEventListener("close", async () => {
     if (socket !== ws) return;  // an older socket closing after a newer one opened
     socket = null;
+    recentsAsked = false;
     render({ ...state, status: "searching" });
     $("status").textContent = "Mac not reachable, retrying";
     // A refused code means the Mac forgot this phone: ask for a new scan instead of retrying forever.
@@ -101,6 +103,7 @@ const press = (key) => sendIfConnected({ type: "key", key });
 // ------------------------------------------------------------ render
 
 let lastNotice = 0;
+let recentsAsked = false;  // once per connection; the Mac pushes changes after that
 
 function render(next) {
   state = next;
@@ -113,6 +116,7 @@ function render(next) {
     el.classList.toggle("warn", state.status === "reconnecting" || state.status === "searching");
   }
   $("remote").classList.toggle("off", state.status !== "connected" || state.is_on === false);
+  if (state.status === "connected" && !recentsAsked) { recentsAsked = true; send({ type: "recents" }); }
   if (state.notice && state.notice_id !== lastNotice) toast(state.notice);
   lastNotice = state.notice_id;
   renderMirror();
@@ -127,6 +131,36 @@ function renderMirror() {
   mirror.textContent = field && field.active
     ? "A text box is open on the TV. What you send goes in at the cursor."
     : "Select a text box on the TV first.";
+}
+
+// ------------------------------------------------------------ recent apps
+
+let recents = [];
+
+function ago(seconds) {
+  if (seconds == null) return "Recently";
+  if (seconds < 60) return "Just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} h ago`;
+  return `${Math.floor(seconds / 86400)} d ago`;
+}
+
+function renderRecents(apps) {
+  recents = apps;
+  const strip = $("recents");
+  strip.replaceChildren();
+  strip.hidden = apps.length === 0;
+  for (const app of apps) {
+    const card = document.createElement("button");
+    card.className = "recent" + (app.package === state.app ? " current" : "");
+    const name = document.createElement("b");
+    name.textContent = app.name || app.package;
+    const when = document.createElement("span");
+    when.textContent = app.package === state.app ? "On screen" : ago(app.inactive);
+    card.append(name, when);
+    card.addEventListener("click", () => sendIfConnected({ type: "resume", package: app.package }));
+    strip.append(card);
+  }
 }
 
 function toast(text) {

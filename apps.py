@@ -385,6 +385,17 @@ class AppsManager:
             self._link_lost()
         return results
 
+    async def shell(self, *commands: str) -> list[str]:
+        """TV shell commands for tv_tools.py. Callers must check and quote every value."""
+        return await self._shell(*commands)
+
+    async def device_command(self, *args: str, timeout: float) -> str:
+        """An adb command addressed to the TV (install), for tv_tools.py."""
+        if self.status != AppsStatus.READY or not self._serial:
+            raise AppsError("Couch is not connected to the TV's app manager.")
+        async with self._lock:
+            return await self._adb("-s", self._serial, *args, timeout=timeout)
+
     def _link_lost(self) -> None:
         self._set(AppsStatus.UNKNOWN)
         raise AppsError("Lost the connection to the TV's app manager. Open Apps to reconnect.")

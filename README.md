@@ -38,6 +38,15 @@ The remote that ships with the Chromecast is easy to lose and hard to type with.
   <img src="docs/screenshots/apps.png" width="420" alt="The Apps manager with pinned apps and the setup steps for the full app list">
 </p>
 
+**Recent apps and TV upgrades** (with Android debugging on)
+- A Recent strip of the apps open on the TV. Click one to bring it back exactly where you left it; close the ones you are done with.
+- One click to the TV's Settings.
+- Install Android apps from the Mac: drop an `.apk` on Couch.
+- Space and memory at a glance, with Free Up Space (clears app caches) and Free Memory (stops background apps).
+- Faster animations, screensaver and sleep timing, each with Reset to the TV's own settings.
+- Switch to an ad free home screen (Projectivy) and back to Google TV at any time.
+- Once paired, Couch follows the TV's debugging connection across restarts by itself.
+
 **Automation**
 - Sleep timer and a daily wake up time that can open an app.
 - Pauses the TV when you lock the Mac or join a call, and can resume afterwards.
