@@ -5,30 +5,46 @@ import AppKit
 ///
 /// The TV wants 16-bit mono PCM at 8 kHz (androidtvremote2 VoiceStream), so input is
 /// converted to that before it leaves the app. Audio recorded before the TV says it is
-/// listening is held back and sent once it is, so the first words are not lost.
+/// listening is held back by RemoteClient and sent once it is, so the first words are not lost.
 @MainActor
 final class VoiceInput: ObservableObject {
+    nonisolated static let sampleRate = 8000.0
+    nonisolated static let bytesPerSecond = Int(sampleRate) * MemoryLayout<Int16>.size
+
     @Published private(set) var recording = false
 
     private let client: RemoteClient
     private let engine = AVAudioEngine()
-    nonisolated private static let tvFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 8000, channels: 1, interleaved: true)!
+    private var sender: Task<Void, Never>?
+    private var audio: AsyncStream<Data>.Continuation?
+    private var configWatch: NSObjectProtocol?
+    nonisolated private static let tvFormat = AVAudioFormat(
+        commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true)!
 
     init(client: RemoteClient) {
         self.client = client
+        // The server ends a session that runs too long, and the TV can drop; stop the mic then too.
+        client.onListeningEnded = { [weak self] in self?.end() }
+        // A microphone change (AirPods in or out) stops the engine under us.
+        configWatch = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.end() }
+        }
     }
 
     /// Button pressed: ask for the microphone if needed, open the TV's voice search and record.
     func begin() {
-        guard !recording, client.state.isConnected else {
-            if !client.state.isConnected { client.show("Not connected to the TV yet.") }
+        guard !recording else { return }
+        guard client.state.isConnected else {
+            client.show("Not connected to the TV yet.")
             return
         }
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
             startRecording()
         case .notDetermined:
-            // The system prompt takes the press; the next press records.
+            // The system prompt takes this press; the next press records.
             AVCaptureDevice.requestAccess(for: .audio) { granted in
                 Task { @MainActor in
                     self.client.show(granted ? "Microphone ready. Hold the button and speak." : "Couch needs the microphone for voice.")
@@ -40,32 +56,44 @@ final class VoiceInput: ObservableObject {
         }
     }
 
-    /// Button released: stop and let the TV run the search.
+    /// Button released (or the session ended): stop and let the TV run the search.
     func end() {
         guard recording else { return }
+        recording = false
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        recording = false
+        audio?.finish()
+        audio = nil
         client.endVoice()
     }
 
     private func startRecording() {
         let input = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0)
-        guard inputFormat.sampleRate > 0, let converter = AVAudioConverter(from: inputFormat, to: Self.tvFormat) else {
+        let inputFormat = input.inputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
+              let converter = AVAudioConverter(from: inputFormat, to: Self.tvFormat) else {
             client.show("No microphone found.")
             return
         }
+
+        // One consumer keeps the audio in recording order on its way to the TV.
+        let (stream, continuation) = AsyncStream.makeStream(of: Data.self, bufferingPolicy: .bufferingNewest(64))
+        audio = continuation
         let client = self.client
+        sender = Task { @MainActor in
+            for await pcm in stream { client.sendVoiceAudio(pcm) }
+        }
+
         input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { buffer, _ in
-            guard let pcm = Self.convert(buffer, with: converter) else { return }
-            Task { @MainActor in client.sendVoiceAudio(pcm) }
+            if let pcm = Self.convert(buffer, with: converter) { continuation.yield(pcm) }
         }
         do {
             engine.prepare()
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
+            continuation.finish()
+            audio = nil
             client.show("Could not start the microphone.")
             return
         }
@@ -80,6 +108,7 @@ final class VoiceInput: ObservableObject {
         guard let output = AVAudioPCMBuffer(pcmFormat: tvFormat, frameCapacity: capacity) else { return nil }
         var supplied = false
         var error: NSError?
+        // Hand the converter this one buffer; it keeps any leftover input for the next call.
         converter.convert(to: output, error: &error) { _, status in
             if supplied {
                 status.pointee = .noDataNow

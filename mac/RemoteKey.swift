@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 
 /// Remote buttons. Raw values are Android key names and must stay in step with
 /// ALLOWED_KEYS in server.py, which refuses anything else.
@@ -27,14 +28,14 @@ enum RemoteKey: String {
 
     /// The Mac keyboard shortcut for a key press, if there is one.
     init?(event: NSEvent) {
-        switch event.keyCode {
-        case 126: self = .up
-        case 125: self = .down
-        case 123: self = .left
-        case 124: self = .right
-        case 36, 76: self = .select  // Return, keypad Enter
-        case 51: self = .back  // Delete
-        case 49: self = .playPause  // Space
+        switch Int(event.keyCode) {
+        case kVK_UpArrow: self = .up
+        case kVK_DownArrow: self = .down
+        case kVK_LeftArrow: self = .left
+        case kVK_RightArrow: self = .right
+        case kVK_Return, kVK_ANSI_KeypadEnter: self = .select
+        case kVK_Delete: self = .back
+        case kVK_Space: self = .playPause
         default:
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "h": self = .home
@@ -47,6 +48,3 @@ enum RemoteKey: String {
         }
     }
 }
-
-/// Esc: Back in the window, close in the menu bar panel.
-let escapeKeyCode: UInt16 = 53

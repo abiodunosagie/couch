@@ -21,14 +21,15 @@ from aiohttp import WSMsgType, web
 from androidtvremote2 import AndroidTVRemote, CannotConnect, ConnectionClosed, InvalidAuth, VoiceStream
 from androidtvremote2.remote import VOICE_CHUNK_MIN_SIZE
 
-from text_input import EDIT_KEYS, FieldTrackingProtocol
+from text_input import EDIT_KEYS, NAVIGATION_KEYS, FieldTrackingProtocol
 from tv import check_pairing_code, find_tv, make_remote
 
 TOKEN_HEADER = "X-Couch-Token"
 RETRY_SECONDS = 5.0
 REDISCOVER_AFTER_SECONDS = 30.0
 MAX_TEXT_LENGTH = 2000  # one paste
-MAX_MESSAGE_BYTES = 16384  # room for a 2000 character paste as JSON
+# Room for a 2000 character paste as escaped JSON, and for audio frames.
+MAX_MESSAGE_BYTES = 65536
 PARENT_CHECK_SECONDS = 5.0
 # A held voice button that never sends "voice_end" (app crashed) must not keep the TV listening.
 MAX_VOICE_SECONDS = 20.0
@@ -258,19 +259,22 @@ class TVSession:
             raise UserError("Unknown button.")
         self._require_connected().send_key_command(key)
 
-    def edit(self, message: dict[str, Any]) -> None:
-        """Type into the focused TV text box: insert `text`, or press an edit `key` (delete, cursor)."""
-        self._require_connected()
-        protocol = self._field_protocol()
+    def edit(self, text: object = None, key: object = None, clear: bool = False) -> None:
+        """Type into the focused TV text box: insert `text`, press an edit `key`, or `clear` it."""
+        protocol = self._field_protocol() if self.status == "connected" else None
         if protocol is None:
             raise UserError("Not connected to the TV right now.")
-        text, key = message.get("text"), message.get("key")
-        if key is not None:
+        # Without a focused box, Delete and Enter would act as Back and Select on the TV.
+        if not protocol.field_active and key not in NAVIGATION_KEYS:
+            raise UserError("Select a text box on the TV first.")
+        if clear:
+            protocol.queue_clear()
+        elif key is not None:
             if key not in EDIT_KEYS:
                 raise UserError("Unknown key.")
-            protocol.queue_edit("key", key)
+            protocol.queue_key(key)  # dropped when a held key has run far ahead; that is intended
         elif isinstance(text, str) and 0 < len(text) <= MAX_TEXT_LENGTH:
-            protocol.queue_edit("text", text)
+            protocol.queue_insert(text)
         else:
             raise UserError(f"Text must be 1 to {MAX_TEXT_LENGTH} characters.")
 
@@ -304,9 +308,14 @@ class TVSession:
         if self._voice is None or owner is not self._voice_owner:
             return
         self._voice_buffer += data
-        while len(self._voice_buffer) >= VOICE_CHUNK_MIN_SIZE:
-            self._voice.send_chunk(bytes(self._voice_buffer[:VOICE_CHUNK_MIN_SIZE]))
-            del self._voice_buffer[:VOICE_CHUNK_MIN_SIZE]
+        try:
+            while len(self._voice_buffer) >= VOICE_CHUNK_MIN_SIZE:
+                self._voice.send_chunk(bytes(self._voice_buffer[:VOICE_CHUNK_MIN_SIZE]))
+                del self._voice_buffer[:VOICE_CHUNK_MIN_SIZE]
+        except ConnectionClosed:
+            # The TV dropped mid-sentence; end the session so the app stops recording.
+            self._voice_buffer.clear()
+            self.voice_end()
 
     def voice_end(self, owner: web.WebSocketResponse | None = None) -> None:
         if self._voice is None or (owner is not None and owner is not self._voice_owner):
@@ -391,7 +400,7 @@ async def _key(session: TVSession, _ws: web.WebSocketResponse, message: dict[str
 
 
 async def _edit(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
-    session.edit(message)
+    session.edit(text=message.get("text"), key=message.get("key"), clear=message.get("clear") is True)
 
 
 async def _app(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
@@ -437,7 +446,8 @@ async def handle_message(app: web.Application, ws: web.WebSocketResponse, data: 
     except json.JSONDecodeError:
         await ws.send_json({"type": "error", "message": BAD_MESSAGE})
     except UserError as exc:
-        await ws.send_json({"type": "error", "message": str(exc)})
+        # `for` tells the app which request failed, so a typing error does not cancel a voice hold.
+        await ws.send_json({"type": "error", "message": str(exc), "for": kind})
     except (CannotConnect, ConnectionClosed):
         await ws.send_json({"type": "error", "message": TV_UNREACHABLE})
     except Exception:

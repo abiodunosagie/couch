@@ -23,6 +23,8 @@ enum EditKey: String {
     case enter = "ENTER"
     case left = "DPAD_LEFT"
     case right = "DPAD_RIGHT"
+    case up = "DPAD_UP"
+    case down = "DPAD_DOWN"
     case lineStart = "MOVE_HOME"
     case lineEnd = "MOVE_END"
 }
@@ -50,6 +52,8 @@ struct TVState: Decodable, Equatable {
 private struct Envelope: Decodable {
     let type: String
     let message: String?
+    /// For errors: the request type that failed.
+    let `for`: String?
 }
 
 private struct VoiceMessage: Decodable {
@@ -62,6 +66,8 @@ final class RemoteClient: ObservableObject {
     static let toastSeconds: UInt64 = 4
     /// MAX_TEXT_LENGTH in server.py.
     static let maxInsert = 2000
+    /// The helper drops WebSocket frames over 64 KB, so held audio goes out in pieces.
+    private static let audioFrameBytes = 8192
     private static let firstRetry: UInt64 = 500_000_000
     private static let maxRetry: UInt64 = 8_000_000_000
 
@@ -73,6 +79,8 @@ final class RemoteClient: ObservableObject {
 
     /// Called when the link drops, before reconnecting. Lets the app restart the helper.
     var onLinkLost: (() async -> Void)?
+    /// Called when the TV stops taking voice (released, timed out, or the TV dropped).
+    var onListeningEnded: (() -> Void)?
 
     private let token: String
     private var task: URLSessionWebSocketTask?
@@ -81,8 +89,8 @@ final class RemoteClient: ObservableObject {
     /// Microphone audio recorded before the TV starts listening.
     private var heldAudio = Data()
     private var voiceRequested = false
-    /// About 4 seconds of TV-format audio; anything older is dropped.
-    private static let maxHeldAudio = 64_000
+    /// Four seconds of TV-format audio (8 kHz, 16 bit, mono); later audio is not held.
+    private static let maxHeldAudio = VoiceInput.bytesPerSecond * 4
 
     init(token: String) {
         self.token = token
@@ -125,16 +133,24 @@ final class RemoteClient: ObservableObject {
             state = next
         case "voice":
             listening = (try? JSONDecoder().decode(VoiceMessage.self, from: data))?.listening ?? false
+            if !listening { onListeningEnded?() }
             if listening {
-                if !heldAudio.isEmpty { task?.send(.data(heldAudio)) { _ in } }
+                var offset = heldAudio.startIndex
+                while offset < heldAudio.endIndex {
+                    let end = min(offset + Self.audioFrameBytes, heldAudio.endIndex)
+                    task?.send(.data(heldAudio.subdata(in: offset..<end))) { _ in }
+                    offset = end
+                }
                 heldAudio.removeAll()
                 // Released before the TV was ready: end the session now that it exists.
                 if !voiceRequested { send(["type": "voice_end"]) }
             }
         case "error":
             if let text = envelope.message { show(text) }
-            voiceRequested = false
-            heldAudio.removeAll()
+            if envelope.for == "voice_start" {
+                voiceRequested = false
+                heldAudio.removeAll()
+            }
         default:
             break
         }
@@ -142,6 +158,7 @@ final class RemoteClient: ObservableObject {
 
     private func linkLost() async {
         linkUp = false
+        if listening { onListeningEnded?() }
         listening = false
         voiceRequested = false
         heldAudio.removeAll()
@@ -171,7 +188,19 @@ final class RemoteClient: ObservableObject {
     /// Insert text at the cursor of the TV text box.
     func insert(_ text: String) {
         guard !text.isEmpty, requireConnected() else { return }
-        send(["type": "edit", "text": String(text.prefix(Self.maxInsert))])
+        // Count code points, as the helper does, so a paste near the limit is not rejected whole.
+        var scalars = String.UnicodeScalarView()
+        scalars.append(contentsOf: text.unicodeScalars.prefix(Self.maxInsert))
+        if scalars.count < text.unicodeScalars.count {
+            show("Only the first \(Self.maxInsert) characters were sent.")
+        }
+        send(["type": "edit", "text": String(scalars)])
+    }
+
+    /// Empty the TV text box. The helper deletes from the end, using the text it has from the TV.
+    func clearField() {
+        guard requireConnected() else { return }
+        send(["type": "edit", "clear": true])
     }
 
     func edit(_ key: EditKey) {
@@ -217,7 +246,7 @@ final class RemoteClient: ObservableObject {
         return false
     }
 
-    private func send(_ payload: [String: String]) {
+    private func send(_ payload: [String: Any]) {
         guard let task, linkUp,
               let data = try? JSONSerialization.data(withJSONObject: payload),
               let text = String(data: data, encoding: .utf8) else {

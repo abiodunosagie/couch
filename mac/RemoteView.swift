@@ -129,7 +129,8 @@ private struct RoundKey<Label: View>: View {
 private struct VoiceKey: View {
     @ObservedObject var voice: VoiceInput
     @ObservedObject var client: RemoteClient
-    @State private var held = false
+    /// Resets by itself if the gesture is cancelled (window hidden mid-press), so it cannot stick.
+    @GestureState private var held = false
 
     private var live: Bool { voice.recording && client.listening }
 
@@ -147,22 +148,9 @@ private struct VoiceKey: View {
             .animation(.easeOut(duration: 0.12), value: held)
             .animation(.easeOut(duration: 0.12), value: live)
             .contentShape(Circle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        guard !held else { return }
-                        held = true
-                        voice.begin()
-                    }
-                    .onEnded { _ in
-                        held = false
-                        voice.end()
-                    }
-            )
-            .onDisappear {
-                held = false
-                voice.end()
-            }
+            .gesture(DragGesture(minimumDistance: 0).updating($held) { _, state, _ in state = true })
+            .onChange(of: held) { if held { voice.begin() } else { voice.end() } }
+            .onDisappear { voice.end() }
             .help("Hold and speak to search the TV")
             .accessibilityLabel("Voice search, hold and speak")
             .accessibilityAddTraits(.isButton)

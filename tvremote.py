@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
+import secrets
 import sys
 import threading
 from collections.abc import AsyncIterator
@@ -133,6 +135,10 @@ async def cmd_status(args: argparse.Namespace) -> None:
 
 
 async def cmd_serve(args: argparse.Namespace) -> None:
+    if not os.environ.get("COUCH_TOKEN"):
+        # Run by hand: still require a token, so other local programs cannot drive the TV.
+        os.environ["COUCH_TOKEN"] = secrets.token_urlsafe(24)
+        print(f"Clients must send the header X-Couch-Token: {os.environ['COUCH_TOKEN']}", flush=True)
     await serve(args.port, args.host, args.name, args.parent_pid)
 
 
@@ -157,6 +163,9 @@ def main() -> None:
         level=logging.DEBUG if args.verbose else logging.INFO if args.command == "serve" else logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # At DEBUG the library logs every message it sends and receives, typed text and
+    # passwords included. Keep it at INFO even with -v.
+    logging.getLogger("androidtvremote2").setLevel(logging.INFO)
     command = {
         "serve": cmd_serve,
         "pair": cmd_pair,

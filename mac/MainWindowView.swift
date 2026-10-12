@@ -30,7 +30,8 @@ struct MainWindowView: View {
                 } else if model.typing {
                     TypingPanel(model: model)
                 } else {
-                    TypeButton(model: model)
+                    Button { model.typing = true } label: { Label("Type on the TV", systemImage: "keyboard") }
+                        .help("Type with your keyboard (/)")
                 }
 
                 Text(client.toast ?? " ")

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from google.protobuf.message import DecodeError
 
@@ -30,13 +31,38 @@ from androidtvremote2.remotemessage_pb2 import (
     RemoteMessage,
 )
 
-# Each insert moves the field id on, so the next edit waits for the TV's echo with the new id.
-ECHO_TIMEOUT_SECONDS = 0.6
+# Each insert moves the field id on, so the next edit waits for the echo carrying the new id.
+# No retry after a timeout: a late echo would turn a retry into a doubled letter.
+ECHO_TIMEOUT_SECONDS = 1.0
 # Key edits (delete, cursor moves) get no reliable echo; a short gap keeps them in order.
-KEY_GAP_SECONDS = 0.08
+KEY_GAP_SECONDS = 0.04
+# Held Delete auto-repeats faster than the TV takes keys; past this, new key edits are dropped
+# so nothing keeps deleting after the key is released.
+MAX_QUEUED_KEYS = 12
+# Clearing deletes at most this many characters.
+MAX_CLEAR = 500
 
-# Keys allowed in an edit sequence, in the order the user pressed them.
-EDIT_KEYS = frozenset({"DEL", "FORWARD_DEL", "ENTER", "DPAD_LEFT", "DPAD_RIGHT", "MOVE_HOME", "MOVE_END"})
+# Keys allowed in an edit sequence, sent in the order the user pressed them.
+EDIT_KEYS = frozenset({
+    "DEL", "FORWARD_DEL", "ENTER", "MOVE_HOME", "MOVE_END",
+    "DPAD_LEFT", "DPAD_RIGHT", "DPAD_UP", "DPAD_DOWN",
+})
+# Up and Down move between fields, so they are allowed when no field is focused.
+NAVIGATION_KEYS = frozenset({"DPAD_UP", "DPAD_DOWN"})
+
+for _key in EDIT_KEYS:
+    if f"KEYCODE_{_key}" not in RemoteKeyCode.keys():
+        raise ImportError(f"androidtvremote2 has no KEYCODE_{_key}")
+
+
+@dataclass
+class _Insert:
+    text: str
+
+
+@dataclass
+class _Key:
+    name: str
 
 
 class FieldTrackingProtocol(RemoteProtocol):
@@ -47,8 +73,8 @@ class FieldTrackingProtocol(RemoteProtocol):
         self.text_field_id = 0
         self.field_value = ""
         self.on_field_changed: Callable[[], None] | None = None
-        self._edits: deque[tuple[str, str]] = deque()
-        self._echo: asyncio.Event = asyncio.Event()
+        self._edits: deque[_Insert | _Key] = deque()
+        self._id_moved = asyncio.Event()
         self._pump: asyncio.Task[None] | None = None
 
     @property
@@ -72,11 +98,12 @@ class FieldTrackingProtocol(RemoteProtocol):
             elif msg.HasField("remote_ime_show_request"):
                 status = msg.remote_ime_show_request.remote_text_field_status
                 self._field_update(status.counter_field, status.value)
-                self._echo.set()
         super()._handle_message(raw_msg)
 
     def _field_update(self, field_id: int, value: str) -> None:
         changed = (field_id != 0) != self.field_active or value != self.field_value
+        if field_id != self.text_field_id:
+            self._id_moved.set()
         self.text_field_id = field_id
         self.field_value = value
         if changed and self.on_field_changed:
@@ -88,40 +115,62 @@ class FieldTrackingProtocol(RemoteProtocol):
         """Insert `text` at the cursor of the focused field."""
         if not text:
             raise ValueError("Text cannot be empty")
-        self.queue_edit("text", text)
+        self.queue_insert(text)
 
-    def queue_edit(self, kind: str, value: str) -> None:
-        """Queue an insert (`kind` "text") or an edit key (`kind` "key", one of EDIT_KEYS)."""
-        if kind == "key" and value not in EDIT_KEYS:
-            raise ValueError(f"Not an edit key: {value}")
-        if kind == "text" and self._edits and self._edits[-1][0] == "text":
+    def queue_insert(self, text: str) -> None:
+        if self._edits and isinstance(self._edits[-1], _Insert):
             # Fast typing: merge into the insert that is still waiting to go out.
-            self._edits[-1] = ("text", self._edits[-1][1] + value)
+            self._edits[-1].text += text
         else:
-            self._edits.append((kind, value))
+            self._edits.append(_Insert(text))
+        self._run()
+
+    def queue_key(self, name: str) -> bool:
+        """Queue an edit key. Returns False when dropped because too many are waiting."""
+        if name not in EDIT_KEYS:
+            raise ValueError(f"Not an edit key: {name}")
+        if sum(isinstance(edit, _Key) for edit in self._edits) >= MAX_QUEUED_KEYS:
+            return False
+        self._edits.append(_Key(name))
+        self._run()
+        return True
+
+    def queue_clear(self) -> None:
+        """Empty the field: jump to the end, then delete everything the TV last reported."""
+        self._edits.append(_Key("MOVE_END"))
+        self._edits.extend(_Key("DEL") for _ in range(min(len(self.field_value), MAX_CLEAR)))
+        self._run()
+
+    def _run(self) -> None:
         if self._pump is None or self._pump.done():
             self._pump = self._loop.create_task(self._send_edits())
 
     async def _send_edits(self) -> None:
         while self._edits:
-            kind, value = self._edits.popleft()
+            edit = self._edits.popleft()
             self._reset_idle_disconnect_task()
-            if kind == "key":
-                self.send_key_command(f"KEYCODE_{value}")
+            if isinstance(edit, _Key):
+                self.send_key_command(f"KEYCODE_{edit.name}")
                 await asyncio.sleep(KEY_GAP_SECONDS)
-                continue
-            self._echo.clear()
-            self._send_insert(value)
-            try:
-                await asyncio.wait_for(self._echo.wait(), ECHO_TIMEOUT_SECONDS)
-            except TimeoutError:
-                pass  # no echo (no field focused, or the TV dropped it); carry on rather than stall
+            else:
+                await self._insert(edit.text)
+
+    async def _insert(self, text: str) -> None:
+        sent_with = self.text_field_id
+        self._id_moved.clear()
+        self._send_insert(text)
+        # Only an echo that moves the id on belongs to this insert; an older echo does not.
+        try:
+            await asyncio.wait_for(self._wait_for_new_id(sent_with), ECHO_TIMEOUT_SECONDS)
+        except TimeoutError:
+            pass  # the TV dropped it or is slow; carry on rather than stall the queue
+
+    async def _wait_for_new_id(self, sent_with: int) -> None:
+        while self.text_field_id == sent_with:
+            await self._id_moved.wait()
+            self._id_moved.clear()
 
     def _send_insert(self, text: str) -> None:
-        if not self.text_field_id:
-            # No field announced yet; the library's own addressing is the only option left.
-            super().send_text(text)
-            return
         msg = RemoteMessage()
         field = RemoteImeObject(start=len(text), end=len(text), value=text)
         msg.remote_ime_batch_edit.CopyFrom(
@@ -143,6 +192,3 @@ class FieldTrackingProtocol(RemoteProtocol):
 def install() -> None:
     """Make AndroidTVRemote build FieldTrackingProtocol connections."""
     library.RemoteProtocol = FieldTrackingProtocol
-
-
-assert all(f"KEYCODE_{k}" in RemoteKeyCode.keys() for k in EDIT_KEYS)

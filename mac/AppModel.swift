@@ -24,7 +24,9 @@ final class AppModel: ObservableObject {
         }
     }
     /// While on, the Mac keyboard types into the TV text box instead of pressing remote buttons.
-    @Published var typing = false
+    @Published var typing = false {
+        didSet { if !typing { hideFieldText = false } }
+    }
     /// Size of the remote in the menu bar panel, chosen so the panel fits the screen.
     @Published var panelScale: CGFloat = 0.74
     @Published private(set) var startFailed = false
@@ -51,20 +53,21 @@ final class AppModel: ObservableObject {
         client.connect()
     }
 
+    /// Hides the mirrored TV text, for passwords. Turns on by itself after pasting one.
+    @Published var hideFieldText = false
+
     /// Paste the Mac clipboard into the TV text box.
     func paste() {
-        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
+        let board = NSPasteboard.general
+        guard let text = board.string(forType: .string), !text.isEmpty else {
             client.show("The clipboard has no text.")
             return
         }
+        // Password managers mark copied secrets; keep them off the screen once on the TV.
+        if board.types?.contains(NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")) == true {
+            hideFieldText = true
+        }
         client.insert(text)
-    }
-
-    /// Empty the TV text box by deleting from the end.
-    func clearField() {
-        guard let field = client.state.field, field.active else { return }
-        client.edit(.lineEnd)
-        for _ in field.value { client.edit(.deleteBackward) }
     }
 
     var statusText: String {

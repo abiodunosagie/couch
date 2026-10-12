@@ -5,7 +5,7 @@ import SwiftUI
 struct TypingPanel: View {
     @ObservedObject var model: AppModel
     @ObservedObject var client: RemoteClient
-    var compact = false
+    let compact: Bool
 
     init(model: AppModel, compact: Bool = false) {
         self.model = model
@@ -30,8 +30,14 @@ struct TypingPanel: View {
             HStack(spacing: 8) {
                 Button { model.paste() } label: { Label("Paste", systemImage: "doc.on.clipboard") }
                 Button { client.edit(.deleteBackward) } label: { Label("Delete", systemImage: "delete.left") }
-                Button { model.clearField() } label: { Label("Clear", systemImage: "xmark.circle") }
+                Button { client.clearField() } label: { Label("Clear", systemImage: "xmark.circle") }
                     .disabled(field?.value.isEmpty ?? true)
+                Spacer()
+                Button { model.hideFieldText.toggle() } label: {
+                    Image(systemName: model.hideFieldText ? "eye.slash" : "eye")
+                }
+                .buttonStyle(.borderless)
+                .help(model.hideFieldText ? "Show the text" : "Hide the text, for passwords")
             }
             .controlSize(compact ? .small : .regular)
 
@@ -49,7 +55,8 @@ struct TypingPanel: View {
     @ViewBuilder private var mirror: some View {
         Group {
             if let field, field.active {
-                (Text(field.value) + Text("|").foregroundStyle(Color.accentColor))
+                (Text(model.hideFieldText ? String(repeating: "•", count: field.value.count) : field.value)
+                    + Text("|").foregroundStyle(Color.accentColor))
                     .font(.system(size: compact ? 14 : 17, weight: .medium, design: .rounded))
                     .lineLimit(3)
                     .truncationMode(.head)
@@ -62,19 +69,9 @@ struct TypingPanel: View {
         .frame(maxWidth: .infinity, minHeight: compact ? 30 : 40, alignment: .leading)
         .padding(.horizontal, 10)
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(nsColor: .textBackgroundColor)))
-        .accessibilityLabel(field?.active == true ? "TV text box: \(field?.value ?? "")" : "No text box selected on the TV")
-    }
-}
-
-/// Opens typing mode.
-struct TypeButton: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        Button { model.typing = true } label: {
-            Label("Type on the TV", systemImage: "keyboard")
-        }
-        .help("Type with your keyboard (/)")
+        .accessibilityLabel(field?.active == true
+                            ? (model.hideFieldText ? "TV text box, hidden" : "TV text box: \(field?.value ?? "")")
+                            : "No text box selected on the TV")
     }
 }
 
