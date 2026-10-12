@@ -17,18 +17,25 @@ final class MicWatcher {
     private(set) var inUseByOthers = false
     private var timer: Timer?
     private static let pollSeconds = 2.0
-    /// Readings in a row that must agree before the state changes: about 4 seconds.
+    /// Readings in a row that must agree before the state changes: 2 to 4 seconds.
     private static let confirmReadings = 2
     private var streak = 0
     /// Where macOS keeps its own background services; apps live elsewhere.
-    nonisolated private static let systemServiceFolders = ["/System/Library/", "/usr/", "/Library/Apple/"]
+    nonisolated private static let systemServiceFolders = [
+        "/System/Library/", "/Library/Apple/", "/usr/libexec/", "/usr/sbin/", "/usr/bin/", "/usr/lib/",
+    ]
+    /// Safari records a call in WebKit's own processes, which live in a system folder: those count.
+    nonisolated private static let webKit = "/System/Library/Frameworks/WebKit.framework/"
     /// The macOS services that do the recording for FaceTime and for iPhone calls on the Mac: those are calls.
     nonisolated private static let callServices: Set<String> = ["avconferenced", "callservicesd"]
 
     func start() {
-        timer = Timer.scheduledTimer(withTimeInterval: Self.pollSeconds, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: Self.pollSeconds, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.check() }
         }
+        // Common modes, so polling goes on while a menu is open.
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
         check()
     }
 
@@ -56,12 +63,13 @@ final class MicWatcher {
 
     nonisolated static func isSystemService(_ pid: pid_t) -> Bool {
         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return false }
+        // A process whose path cannot be read is left out: a missed blip beats a TV paused for nothing.
+        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return true }
         return isSystemServicePath(String(cString: buffer))
     }
 
     nonisolated static func isSystemServicePath(_ path: String) -> Bool {
-        if callServices.contains((path as NSString).lastPathComponent) { return false }
+        if callServices.contains((path as NSString).lastPathComponent) || path.hasPrefix(webKit) { return false }
         return systemServiceFolders.contains { path.hasPrefix($0) }
     }
 
