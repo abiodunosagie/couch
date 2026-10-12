@@ -147,6 +147,15 @@ private struct SceneEditor: View {
                         Button("\(seconds) seconds") { scene.steps.append(.wait(seconds: seconds)) }
                     }
                 }
+                Menu("Air conditioner (Breeze)") {
+                    Button(AirStep.on.label) { scene.steps.append(.airConditioner(.on)) }
+                    Button(AirStep.off.label) { scene.steps.append(.airConditioner(.off)) }
+                    Menu("Cool to") {
+                        ForEach(AirStep.degrees, id: \.self) { degrees in
+                            Button("\(degrees)°") { scene.steps.append(.airConditioner(.cool(degrees: degrees))) }
+                        }
+                    }
+                }
             } label: {
                 Label("Add step", systemImage: "plus")
             }

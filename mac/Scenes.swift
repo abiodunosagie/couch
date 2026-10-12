@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 /// One step of a scene.
 enum SceneStep: Codable, Equatable, Hashable {
@@ -7,6 +7,8 @@ enum SceneStep: Codable, Equatable, Hashable {
     case press(RemoteKey)
     case openApp(package: String)
     case wait(seconds: Int)
+    /// Hands the air conditioner part to the Breeze app through a breeze:// link; Breeze asks first.
+    case airConditioner(AirStep)
 
     var label: String {
         switch self {
@@ -15,6 +17,32 @@ enum SceneStep: Codable, Equatable, Hashable {
         case .press(let key): "Press \(key.title)"
         case .openApp(let package): "Open \(friendlyApp(package))"
         case .wait(let seconds): "Wait \(seconds) seconds"
+        case .airConditioner(let step): step.label
+        }
+    }
+}
+
+/// What a scene can ask Breeze for. Couch never talks to the air conditioner itself.
+enum AirStep: Codable, Equatable, Hashable {
+    case on
+    case off
+    case cool(degrees: Int)
+
+    static let degrees = Array(18...28)
+
+    var label: String {
+        switch self {
+        case .on: "Switch the AC on (Breeze)"
+        case .off: "Switch the AC off (Breeze)"
+        case .cool(let degrees): "Cool to \(degrees)° (Breeze)"
+        }
+    }
+
+    var url: URL? {
+        switch self {
+        case .on: URL(string: "breeze://on")
+        case .off: URL(string: "breeze://off")
+        case .cool(let degrees): URL(string: "breeze://set?target=\(degrees)&mode=cool")
         }
     }
 }
@@ -109,6 +137,13 @@ final class Scenes: ObservableObject {
             }
         case .wait(let seconds):
             try? await Task.sleep(nanoseconds: UInt64(min(max(seconds, 0), Self.maxWaitSeconds)) * 1_000_000_000)
+        case .airConditioner(let step):
+            // Breeze shows the request in its panel; nothing changes until the user confirms there.
+            guard let url = step.url, NSWorkspace.shared.urlForApplication(toOpen: url) != nil else {
+                client.show("Breeze is not installed, so the air conditioner step was skipped.")
+                return
+            }
+            NSWorkspace.shared.open(url)
         }
     }
 
