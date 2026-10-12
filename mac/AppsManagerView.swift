@@ -88,7 +88,10 @@ struct AppsManagerView: View {
         .frame(width: Self.size.width, height: Self.size.height)
         .onExitCommand(perform: close)
         // Opened before the helper link was up: the first Connect was lost, so ask again once it is.
-        .onChange(of: client.linkUp) { if client.linkUp && client.appsLink == .unknown { client.connectApps() } }
+        .onChange(of: client.state.isConnected) {
+            if client.state.isConnected && client.appsLink == .unknown { client.connectApps() }
+        }
+        .onChange(of: client.appsLink) { if client.appsLink == .ready { showPairing = false } }
         .onAppear {
             switch client.appsLink {
             case .ready: if client.installedApps.isEmpty { client.refreshApps() }
@@ -265,16 +268,15 @@ private struct PairingSteps: View {
             Text("2. Choose “Pair device with pairing code” and leave that screen open.")
             Text("3. Type the 6 digit code it shows:")
             HStack(spacing: 8) {
-                TextField("123456", text: $code)
+                TextField("Code from TV", text: $code)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 17, weight: .medium, design: .monospaced))
-                    .frame(width: 120)
+                    .frame(width: 150)
                     .focused($codeFocused)
-                    .onChange(of: code) { code = String(code.filter(\.isNumber).prefix(6)) }
-                    .onSubmit(pair)
+                    .onChange(of: code) { code = String(code.filter(\.isNumber).prefix(Self.codeLength)) }
+                    .onSubmit(pair)  // Return pairs; the button has no shortcut so it cannot fire twice
                 Button("Pair", action: pair)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(code.count != 6)
+                    .disabled(code.count != Self.codeLength || client.appsLink == .pairing)
             }
             DisclosureGroup("Couch cannot find the TV?") {
                 VStack(alignment: .leading, spacing: 6) {
@@ -292,8 +294,11 @@ private struct PairingSteps: View {
         .onAppear { codeFocused = true }
     }
 
+    /// Matches PAIRING_CODE in apps.py.
+    static let codeLength = 6
+
     private func pair() {
-        guard code.count == 6 else { return }
+        guard code.count == Self.codeLength, client.appsLink != .pairing else { return }
         client.pairApps(code: code, address: address.trimmingCharacters(in: .whitespaces))
     }
 }

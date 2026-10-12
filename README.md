@@ -61,11 +61,11 @@ The remote that ships with the Chromecast is easy to lose and hard to type with.
                                 ▼                │                         │
  Helper (Python, asyncio) ──────────────────────▶│  ADB, optional          │
  ├─ androidtvremote2: keys, text, voice, links   └─────────────────────────┘
- ├─ adb-shell: installed apps (opt in)
+ ├─ Google's adb: installed apps (opt in)
  └─ phone page server, LAN, token gated ◀── phone browser
 ```
 
-The Mac app draws everything natively and talks to a small helper process it starts and stops itself. The helper holds the TV connection: [androidtvremote2](https://github.com/tronikos/androidtvremote2) for the remote protocol, and [adb-shell](https://github.com/JeffLIrion/adb_shell) for the optional app manager.
+The Mac app draws everything natively and talks to a small helper process it starts and stops itself. The helper holds the TV connection: [androidtvremote2](https://github.com/tronikos/androidtvremote2) for the remote protocol, and Google's `adb` tool (with Wireless debugging pairing) for the optional app manager. The TV is found over Bonjour with [zeroconf](https://github.com/python-zeroconf/python-zeroconf).
 
 Two things Couch fixes on top of the library, both found against a real Chromecast with Google TV 4K and covered by tests in `tests/`:
 - Typed text is only accepted when it carries the TV's app counter and the focused field id, not the counters the library sends.
@@ -76,6 +76,7 @@ Two things Couch fixes on top of the library, both found against a real Chromeca
 - macOS 15 or later on Apple Silicon
 - Xcode command line tools (`xcode-select --install`)
 - [uv](https://docs.astral.sh/uv/) for the Python helper
+- For the app manager only: Google's adb (`brew install --cask android-platform-tools`)
 - A Chromecast with Google TV (or another Google TV / Android TV device) on the same network
 
 ## Build and run
@@ -92,7 +93,7 @@ open ~/Applications/Couch.app
 ## First run
 
 1. Couch finds the TV on your network and asks for the 6 character code the TV shows. That pairs this Mac once.
-2. For the full app list (optional): on the TV open **Settings › System › About**, press **Android TV OS build** seven times, then turn on **USB debugging** in **Developer options**. In Couch choose **Apps › Manage › Connect** and allow the Mac on the TV.
+2. For the full app list (optional): on the TV open **Settings › System › About** and press **Android TV OS build** seven times. In **Developer options** turn on **USB debugging** and **Wireless debugging**. Open **Wireless debugging › Pair device with pairing code**, then in Couch choose **Apps › Manage** and type the 6 digit code.
 3. For the phone remote (optional): open the **Phone** tab, turn it on and scan the code.
 
 ## Keyboard

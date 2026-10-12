@@ -63,7 +63,6 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             self.startFailed = !(await self.helper.ensureRunning())
         }
-        // A slow first start can time out and then succeed; clear the error once the link is up.
         client.onUninstalled = { [weak self] package in
             guard let self else { return }
             self.favourites.unpin(package)
@@ -80,6 +79,7 @@ final class AppModel: ObservableObject {
             default: self.client.show(reason.isEmpty ? "Couch could not find debugging on the TV. See the steps in Apps." : reason)
             }
         }
+        // A slow first start can time out and then succeed; clear the error once the link is up.
         linkWatch = client.$linkUp.sink { [weak self] up in
             if up { MainActor.assumeIsolated { self?.startFailed = false } }
         }

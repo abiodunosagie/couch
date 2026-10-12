@@ -25,3 +25,18 @@ def test_package_list_drops_anything_that_is_not_a_package():
 def test_package_names_are_strict(bad):
     with pytest.raises(AppsError):
         check_package(bad)
+
+
+def test_output_after_adb_daemon_start_lines():
+    from apps import last_line, lost_device
+    banner = "* daemon not running; starting now at tcp:5037\n* daemon started successfully\n"
+    assert connected(banner + "connected to 192.168.1.11:33417\n")
+    assert last_line(banner + "device\n") == "device"
+    assert lost_device("error: device '192.168.1.11:33417' not found")
+    assert not lost_device("package:com.netflix.ninja")
+
+
+def test_unauthorized_legacy_tv():
+    from apps import unauthorized
+    assert unauthorized("failed to authenticate to 192.168.1.11:5555")
+    assert not unauthorized("connected to 192.168.1.11:5555")

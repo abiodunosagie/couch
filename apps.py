@@ -30,6 +30,8 @@ LEGACY_PORT = 5555
 CONNECT_SERVICE = "_adb-tls-connect._tcp.local."
 PAIRING_SERVICE = "_adb-tls-pairing._tcp.local."
 DISCOVERY_SECONDS = 3.0
+# The pairing screen's service can take several seconds to show on the network.
+PAIRING_DISCOVERY_SECONDS = 10.0
 RESOLVE_TIMEOUT_MS = 3000
 PORT_CHECK_SECONDS = 1.5
 CONNECT_TIMEOUT_SECONDS = 15.0
@@ -37,6 +39,10 @@ PAIR_TIMEOUT_SECONDS = 30.0
 COMMAND_TIMEOUT_SECONDS = 15.0
 # On a port 5555 TV, the "Allow USB debugging?" prompt waits for the user.
 ALLOW_WAIT_SECONDS = 90.0
+ALLOW_POLL_SECONDS = 1.0
+# Right after pairing the TV can take a moment to advertise its connect port.
+CONNECT_ATTEMPTS_AFTER_PAIRING = 4
+LOG_SNIPPET_CHARS = 200
 MAX_PACKAGE_LENGTH = 200
 # Where Homebrew and Android Studio put adb; the app starts from launchd with a bare PATH.
 ADB_LOCATIONS = (
@@ -84,9 +90,25 @@ def parse_packages(output: str) -> list[str]:
 
 
 def connected(output: str) -> bool:
-    """`adb connect` output: "connected to h:p" or "already connected to h:p" means up."""
-    text = output.strip().lower()
-    return text.startswith("connected to") or text.startswith("already connected to")
+    """`adb connect` output: "connected to h:p" or "already connected to h:p" means up. adb may
+    print "* daemon started successfully" lines first, so look at every line."""
+    return re.search(r"^(already )?connected to", output, re.MULTILINE | re.IGNORECASE) is not None
+
+
+def unauthorized(output: str) -> bool:
+    """A port 5555 TV that has not allowed this Mac yet."""
+    text = output.lower()
+    return "failed to authenticate" in text or "unauthorized" in text
+
+
+def last_line(output: str) -> str:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
+def lost_device(output: str) -> bool:
+    """adb's own errors when the TV is gone, as opposed to a command's output."""
+    return re.search(r"^(error: |adb: (device|no devices))", output, re.MULTILINE) is not None
 
 
 def paired(output: str) -> bool:
@@ -101,7 +123,7 @@ def find_adb() -> str | None:
     return shutil.which("adb")
 
 
-async def _find_service(service: str, host: str) -> int | None:
+async def _find_service(service: str, host: str, seconds: float = DISCOVERY_SECONDS) -> int | None:
     """The port the TV at `host` advertises for an adb service, if it does right now."""
     names: list[str] = []
 
@@ -112,12 +134,18 @@ async def _find_service(service: str, host: str) -> int | None:
 
     aiozc = AsyncZeroconf()
     browser = AsyncServiceBrowser(aiozc.zeroconf, service, handlers=[on_change])
+    checked: set[str] = set()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + seconds
     try:
-        await asyncio.sleep(DISCOVERY_SECONDS)
-        for name in names:
-            info = AsyncServiceInfo(service, name)
-            if await info.async_request(aiozc.zeroconf, RESOLVE_TIMEOUT_MS) and host in info.parsed_addresses():
-                return info.port
+        # Answer as soon as the TV's service shows up instead of always waiting the full time.
+        while loop.time() < deadline:
+            for name in [n for n in names if n not in checked]:
+                checked.add(name)
+                info = AsyncServiceInfo(service, name)
+                if await info.async_request(aiozc.zeroconf, RESOLVE_TIMEOUT_MS) and host in info.parsed_addresses():
+                    return info.port
+            await asyncio.sleep(0.2)
         return None
     finally:
         await browser.async_cancel()
@@ -149,6 +177,7 @@ class AppsManager:
         self._task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()  # one adb command at a time
         self._installed: set[str] = set()
+        self._server_started = False
 
     def _set(self, status: AppsStatus, message: str = "") -> None:
         if status != self.status or message != self.message:
@@ -164,14 +193,26 @@ class AppsManager:
         if adb is None:
             self._set(AppsStatus.NO_ADB)
             raise AppsError("Google's adb tool is not installed. See the steps in Apps.")
+        if not self._server_started:
+            # Start adb's background server first, so its start up lines never mix into an answer.
+            await self._exec(adb, "start-server", timeout=CONNECT_TIMEOUT_SECONDS)
+            self._server_started = True
+        return await self._exec(adb, *args, timeout=timeout)
+
+    @staticmethod
+    async def _exec(*args: str, timeout: float) -> str:
         process = await asyncio.create_subprocess_exec(
-            adb, *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         try:
             output, _ = await asyncio.wait_for(process.communicate(), timeout)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-            raise AppsError("The TV did not answer in time.") from None
+        except BaseException as exc:
+            # Timed out or cancelled: never leave an adb process behind.
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+            if isinstance(exc, TimeoutError):
+                raise AppsError("The TV did not answer in time.") from None
+            raise
         return output.decode(errors="replace")
 
     # ------------------------------------------------------------ connection
@@ -206,29 +247,34 @@ class AppsManager:
             await work
         except AppsError as exc:
             log.info("apps: %s", exc)
-            self._set(self.status, str(exc))
+            # Always end on a state the user can act on, never on "pairing" or "unknown".
+            settled = {AppsStatus.PAIRING: AppsStatus.NEEDS_PAIRING, AppsStatus.UNKNOWN: AppsStatus.OFF,
+                       AppsStatus.WAITING: AppsStatus.OFF}.get(self.status, self.status)
+            self._set(settled, str(exc))
         except Exception:
             log.exception("apps connection failed")
             self._set(AppsStatus.OFF, "Something went wrong talking to the TV. Try again.")
 
-    async def _connect(self, host: str) -> None:
+    async def _connect(self, host: str, attempts: int = 1) -> None:
         if find_adb() is None:
             self._set(AppsStatus.NO_ADB)
             return
         self._host = host
-        port = await _find_service(CONNECT_SERVICE, host)
-        if port is not None:
-            await self._connect_to(f"{host}:{port}", wireless=True)
-        elif await _port_open(host, LEGACY_PORT):
-            await self._connect_to(f"{host}:{LEGACY_PORT}", wireless=False)
-        else:
-            self._set(AppsStatus.OFF)
+        for _ in range(attempts):
+            port = await _find_service(CONNECT_SERVICE, host)
+            if port is not None:
+                await self._connect_to(f"{host}:{port}", wireless=True)
+                return
+            if await _port_open(host, LEGACY_PORT):
+                await self._connect_to(f"{host}:{LEGACY_PORT}", wireless=False)
+                return
+        self._set(AppsStatus.OFF, "Couch could not find debugging on the TV. Check Wireless debugging is on.")
 
     async def _connect_to(self, serial: str, wireless: bool) -> None:
         async with self._lock:
             output = await self._adb("connect", serial, timeout=CONNECT_TIMEOUT_SECONDS)
-        if not connected(output):
-            log.info("adb connect %s: %s", serial, output.strip()[:200])
+        if not connected(output) and not (not wireless and unauthorized(output)):
+            log.info("adb connect %s: %s", serial, output.strip()[:LOG_SNIPPET_CHARS])
             # A wireless debugging TV refuses a Mac it has not paired with.
             self._set(AppsStatus.NEEDS_PAIRING if wireless else AppsStatus.OFF)
             return
@@ -243,7 +289,7 @@ class AppsManager:
         deadline = loop.time() + ALLOW_WAIT_SECONDS
         while True:
             async with self._lock:
-                state = (await self._adb("-s", serial, "get-state")).strip()
+                state = last_line(await self._adb("-s", serial, "get-state"))
             if state == "device":
                 self._set(AppsStatus.READY)
                 return
@@ -251,21 +297,23 @@ class AppsManager:
                 self._set(AppsStatus.DENIED if "unauthorized" in state else AppsStatus.OFF)
                 return
             self._set(AppsStatus.WAITING)
-            await asyncio.sleep(1)
+            await asyncio.sleep(ALLOW_POLL_SECONDS)
 
     async def _pair(self, host: str, code: str, manual_port: int | None) -> None:
         self._set(AppsStatus.PAIRING)
-        port = manual_port or await _find_service(PAIRING_SERVICE, host)
+        port = manual_port or await _find_service(PAIRING_SERVICE, host, PAIRING_DISCOVERY_SECONDS)
         if port is None:
-            self._set(AppsStatus.NEEDS_PAIRING)
-            raise AppsError("Couch could not find the pairing screen. Keep it open on the TV, or type the address it shows.")
+            self._set(AppsStatus.NEEDS_PAIRING,
+                      "Couch could not find the pairing screen. Keep it open on the TV, or type the address it shows.")
+            return
         async with self._lock:
             output = await self._adb("pair", f"{host}:{port}", code, timeout=PAIR_TIMEOUT_SECONDS)
         if not paired(output):
-            log.info("adb pair: %s", output.strip()[:200])
-            self._set(AppsStatus.DENIED)
-            raise AppsError("The TV did not accept that code. Check it and try again.")
-        await self._connect(host)
+            log.info("adb pair: %s", output.strip()[:LOG_SNIPPET_CHARS])
+            self._set(AppsStatus.NEEDS_PAIRING, "The TV did not accept that code. Check it and try again.")
+            return
+        self._set(AppsStatus.PAIRING, "Paired. Connecting to the TV…")
+        await self._connect(host, attempts=CONNECT_ATTEMPTS_AFTER_PAIRING)
 
     async def close(self) -> None:
         if self._task:
@@ -283,12 +331,14 @@ class AppsManager:
                 for command in commands:
                     results.append(await self._adb("-s", self._serial, "shell", command))
         except AppsError:
-            self._set(AppsStatus.UNKNOWN)
-            raise AppsError("Lost the connection to the TV's app manager. Open Apps to reconnect.") from None
-        if any(result.lstrip().startswith(("error:", "adb: device", "adb: no devices")) for result in results):
-            self._set(AppsStatus.UNKNOWN)
-            raise AppsError("Lost the connection to the TV's app manager. Open Apps to reconnect.")
+            self._link_lost()
+        if any(lost_device(result) for result in results):
+            self._link_lost()
         return results
+
+    def _link_lost(self) -> None:
+        self._set(AppsStatus.UNKNOWN)
+        raise AppsError("Lost the connection to the TV's app manager. Open Apps to reconnect.")
 
     async def installed(self) -> list[str]:
         """Apps the user installed (not system apps), sorted by package name."""
@@ -318,6 +368,6 @@ class AppsManager:
             raise AppsError("Couch only removes apps you installed.")
         (result,) = await self._shell(f"pm uninstall --user 0 {shlex.quote(name)}")
         if not result.strip().startswith("Success"):
-            log.info("uninstall %s: %s", name, result.strip()[:200])
+            log.info("uninstall %s: %s", name, result.strip()[:LOG_SNIPPET_CHARS])
             raise AppsError("The TV did not remove that app.")
         self._installed.discard(name)

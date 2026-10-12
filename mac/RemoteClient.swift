@@ -230,6 +230,7 @@ final class RemoteClient: ObservableObject {
         // A restarted helper has a fresh app manager; forget the old link so pinned apps fall back to links.
         appsLink = .unknown
         installedApps = []
+        connectingApps = false
         if listening { onListeningEnded?() }
         listening = false
         voiceRequested = false
