@@ -1,4 +1,6 @@
 import AppKit
+import Carbon.HIToolbox
+import Combine
 import SwiftUI
 
 @main
@@ -7,7 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let model: AppModel
     private var statusItem: NSStatusItem?
     private var menuPanel: MenuPanel?
-    private var hotKey: GlobalHotKey?
+    private var shortcuts: GlobalShortcuts?
+    private let volumeHUD = VolumeHUD()
+    private var stateWatch: AnyCancellable?
     private var window: NSWindow?
     private var keyRouter: KeyRouter?
 
@@ -115,8 +119,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func buildStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = item.button {
-            button.image = NSImage(systemSymbolName: "appletvremote.gen4.fill", accessibilityDescription: "Couch")
-            button.toolTip = "Couch, TV remote (Option Command R)"
             button.target = self
             button.action = #selector(togglePanel)
         }
@@ -125,7 +127,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         menuPanel = MenuPanel(model: model, openWindow: { [weak self] in self?.showWindow() },
                               quit: { NSApp.terminate(nil) })
-        hotKey = GlobalHotKey { [weak self] in self?.togglePanel() }
+        installShortcuts()
+        // The icon is solid while the TV is on and connected, an outline otherwise.
+        stateWatch = model.client.$state.combineLatest(model.client.$linkUp)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] state, linkUp in
+                MainActor.assumeIsolated { self?.updateStatusIcon(state, linkUp: linkUp) }
+            }
+        updateStatusIcon(model.client.state, linkUp: false)
+    }
+
+    private func updateStatusIcon(_ state: TVState, linkUp: Bool) {
+        guard let button = statusItem?.button else { return }
+        let live = linkUp && state.isConnected && state.isOn != false
+        button.image = NSImage(systemSymbolName: live ? "appletvremote.gen4.fill" : "appletvremote.gen4",
+                               accessibilityDescription: "Couch")
+        let tv = state.tv ?? "TV"
+        let detail: String
+        if !linkUp || !state.isConnected {
+            detail = "\(tv): not connected"
+        } else if state.isOn == false {
+            detail = "\(tv) is off"
+        } else {
+            detail = "\(tv): \(friendlyApp(state.app))"
+        }
+        button.toolTip = "Couch, \(detail)\nOption Command R opens the remote"
+    }
+
+    // MARK: global shortcuts
+
+    private func installShortcuts() {
+        let controlOption = controlKey | optionKey
+        let press: (RemoteKey) -> Void = { [weak self] key in self?.model.client.press(key) }
+        let volume: (RemoteKey, VolumeHUD.Change) -> Void = { [weak self] key, change in
+            guard let self, self.model.client.state.isConnected else { return }
+            self.model.client.press(key)
+            self.volumeHUD.show(change, tv: self.model.client.state.tv)
+        }
+        let list: [GlobalShortcuts.Shortcut] = [
+            .init(keyCode: kVK_ANSI_R, modifiers: cmdKey | optionKey, label: "Option Command R",
+                  action: { [weak self] in self?.togglePanel() }),
+            .init(keyCode: kVK_Space, modifiers: controlOption, label: "Control Option Space",
+                  action: { press(.playPause) }),
+            .init(keyCode: kVK_UpArrow, modifiers: controlOption, label: "Control Option Up",
+                  action: { volume(.volumeUp, .up) }),
+            .init(keyCode: kVK_DownArrow, modifiers: controlOption, label: "Control Option Down",
+                  action: { volume(.volumeDown, .down) }),
+            .init(keyCode: kVK_ANSI_M, modifiers: controlOption, label: "Control Option M",
+                  action: { volume(.mute, .mute) }),
+            .init(keyCode: kVK_ANSI_P, modifiers: controlOption, label: "Control Option P",
+                  action: { press(.power) }),
+        ]
+        shortcuts = GlobalShortcuts(list)
+        model.unavailableShortcuts = shortcuts?.unavailable ?? []
     }
 
     @objc func togglePanel() {

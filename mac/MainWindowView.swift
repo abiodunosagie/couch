@@ -40,6 +40,11 @@ struct MainWindowView: View {
                     .animation(.easeOut(duration: 0.15), value: client.toast)
 
                 Shortcuts()
+                if !model.unavailableShortcuts.isEmpty {
+                    Text("Taken by another app: \(model.unavailableShortcuts.joined(separator: ", ")).")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
 
                 Divider()
 
@@ -64,6 +69,10 @@ private struct Shortcuts: View {
         ("m", "mute"), ("p", "power"), ("/", "type text"),
     ]
     private let columns = 3
+    private static let global = [
+        ("⌥⌘R", "open the remote"), ("⌃⌥Space", "play / pause"), ("⌃⌥↑ ⌃⌥↓", "volume"),
+        ("⌃⌥M", "mute"), ("⌃⌥P", "power"),
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -80,9 +89,17 @@ private struct Shortcuts: View {
                     }
                 }
             }
-            Text("Option Command R opens Couch from any app.")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+            Text("From any app")
+                .font(.system(size: 12, weight: .semibold))
+                .padding(.top, 4)
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
+                ForEach(Self.global, id: \.0) { keys, action in
+                    GridRow {
+                        Text(keys).font(.system(size: 12, design: .monospaced))
+                        Text(action).font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
     }
 }

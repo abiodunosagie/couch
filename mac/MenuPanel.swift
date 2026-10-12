@@ -126,33 +126,3 @@ final class MenuPanel: NSObject, NSWindowDelegate {
 private final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
-
-/// System wide shortcut (Option Command R) that opens the menu bar remote from any app.
-/// Uses the Carbon hot key API, which needs no Accessibility permission.
-final class GlobalHotKey {
-    private var hotKey: EventHotKeyRef?
-    private var handler: EventHandlerRef?
-    private let action: () -> Void
-
-    init(action: @escaping () -> Void) {
-        self.action = action
-        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        let context = Unmanaged.passUnretained(self).toOpaque()
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
-            guard let context else { return noErr }
-            let hotKey = Unmanaged<GlobalHotKey>.fromOpaque(context).takeUnretainedValue()
-            DispatchQueue.main.async { hotKey.action() }
-            return noErr
-        }, 1, &spec, context, &handler)
-
-        let id = EventHotKeyID(signature: OSType(0x4355_4348), id: 1)  // "CUCH"
-        let status = RegisterEventHotKey(UInt32(kVK_ANSI_R), UInt32(cmdKey | optionKey), id,
-                                         GetApplicationEventTarget(), 0, &hotKey)
-        if status != noErr { NSLog("Couch: Option Command R is taken by another app (\(status))") }
-    }
-
-    deinit {
-        if let hotKey { UnregisterEventHotKey(hotKey) }
-        if let handler { RemoveEventHandler(handler) }
-    }
-}

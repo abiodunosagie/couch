@@ -30,6 +30,8 @@ final class AppModel: ObservableObject {
     /// Size of the remote in the menu bar panel, chosen so the panel fits the screen.
     @Published var panelScale: CGFloat = 0.74
     @Published private(set) var startFailed = false
+    /// Global shortcuts another app already owns.
+    @Published var unavailableShortcuts: [String] = []
 
     private var linkWatch: AnyCancellable?
 
@@ -95,6 +97,7 @@ private let appNames = [
     "com.google.android.tvlauncher": "Home screen",
     "com.android.tv.settings": "Settings",
     "com.neilturner.aerialviews": "Screensaver",
+    "com.apple.atve.androidtv.appletv": "Apple TV",
 ]
 
 /// A readable name for the app on the TV; unknown apps show their package name.
