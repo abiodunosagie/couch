@@ -11,6 +11,8 @@ final class VolumeHUD {
     private let panel: NSPanel
     private let host: NSHostingView<HUDView>
     private var hide: DispatchWorkItem?
+    /// Counts presses, so a fade from an older press never hides the panel a newer one showed.
+    private var shown = 0
 
     static let size = NSSize(width: 168, height: 150)
     private static let visibleSeconds = 1.1
@@ -42,17 +44,17 @@ final class VolumeHUD {
             panel.animator().alphaValue = 1
         }
         panel.orderFrontRegardless()
-        var work: DispatchWorkItem!
-        work = DispatchWorkItem { [weak self] in
+        shown += 1
+        let press = shown
+        let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            let current = work
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = Self.fadeSeconds
                 self.panel.animator().alphaValue = 0
             }, completionHandler: {
                 MainActor.assumeIsolated {
                     // Only hide if no newer press came in during the fade.
-                    if self.hide === current { self.panel.orderOut(nil) }
+                    if self.shown == press { self.panel.orderOut(nil) }
                 }
             })
         }
