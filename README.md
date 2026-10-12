@@ -49,7 +49,7 @@ The remote that ships with the Chromecast is easy to lose and hard to type with.
 
 **Automation**
 - Sleep timer and a daily wake up time that can open an app.
-- Pauses the TV when you lock the Mac or join a call, and can resume afterwards.
+- Pauses the TV when you join a call, and can resume afterwards. Pausing when you lock the Mac is there too, off unless you turn it on.
 - Scenes: one click runs a list of steps, like "Movie night" (TV on, wait, open Netflix).
 - `couch://` links for Shortcuts and scripts, with a confirmation before anything reaches the TV.
 

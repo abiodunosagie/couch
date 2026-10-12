@@ -32,7 +32,7 @@ struct MenuPanelView: View {
                 Button { model.typing.toggle() } label: { Image(systemName: "keyboard") }
                     .buttonStyle(.borderless)
                     .help("Type on the TV (/)")
-                Button("Quit", action: quit)
+                Button("Quit Couch", action: quit)
                     .buttonStyle(.borderless)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -58,8 +58,6 @@ struct MenuPanelView: View {
                         ForEach(Finish.allCases) { Text($0.label).tag($0) }
                     }
                     Toggle("Open at Login", isOn: $model.launchAtLogin)
-                    Divider()
-                    Button("Quit Couch", action: quit)
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }

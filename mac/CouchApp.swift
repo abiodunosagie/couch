@@ -228,10 +228,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menuPanel?.close()
         let menu = NSMenu()
         menu.addItem(withTitle: "Open Couch", action: #selector(showWindow), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "Show Remote", action: #selector(togglePanel), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Show Panel", action: #selector(togglePanel), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Couch", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: view)  // just under the icon
+        // The drop view is not flipped, so y below 0 is just under the icon.
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: view)
     }
 
     @objc func togglePanel() {

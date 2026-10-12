@@ -13,7 +13,10 @@ final class Automations: ObservableObject {
         static let wakeEnabled = "wakeEnabled"
         static let wakeMinute = "wakeMinute"
         static let wakeApp = "wakeApp"
-        static let pauseOnLock = "pauseOnLock"
+        /// Opt in: locking or sleeping the Mac leaves the TV alone unless the user ticks this.
+        /// A new key, so the old default (on) that paused movies whenever the Mac slept is dropped.
+        static let pauseOnLock = "pauseOnLockOptIn"
+        static let oldPauseOnLock = "pauseOnLock"
         static let pauseOnCall = "pauseOnCall"
         static let resumeAfterPause = "resumeAfterPause"
     }
@@ -60,7 +63,8 @@ final class Automations: ObservableObject {
         wakeEnabled = defaults.bool(forKey: Key.wakeEnabled)
         wakeMinute = defaults.object(forKey: Key.wakeMinute) as? Int ?? Self.defaultWakeMinute
         wakeApp = defaults.string(forKey: Key.wakeApp)
-        pauseOnLock = defaults.object(forKey: Key.pauseOnLock) as? Bool ?? true
+        defaults.removeObject(forKey: Key.oldPauseOnLock)
+        pauseOnLock = defaults.bool(forKey: Key.pauseOnLock)
         pauseOnCall = defaults.object(forKey: Key.pauseOnCall) as? Bool ?? true
         resumeAfterPause = defaults.bool(forKey: Key.resumeAfterPause)
 

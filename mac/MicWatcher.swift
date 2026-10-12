@@ -42,7 +42,7 @@ final class MicWatcher {
     private func check() {
         let busy = Self.otherAppRecording()
         guard busy != inUseByOthers else {
-            streak = 0
+            streak = 0  // a reading that agrees with the current state starts the count again
             return
         }
         streak += 1
@@ -61,7 +61,7 @@ final class MicWatcher {
         }
     }
 
-    nonisolated static func isSystemService(_ pid: pid_t) -> Bool {
+    nonisolated private static func isSystemService(_ pid: pid_t) -> Bool {
         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
         // A process whose path cannot be read is left out: a missed blip beats a TV paused for nothing.
         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return true }
