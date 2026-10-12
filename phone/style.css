@@ -73,7 +73,7 @@ svg .fill { fill: currentColor; stroke: none; }
 
 /* ------------------------------------------------------------ header */
 
-.top { display: flex; justify-content: space-between; align-items: flex-start; padding: 18px 2px 10px; }
+.top { flex-shrink: 0; display: flex; justify-content: space-between; align-items: flex-start; padding: min(2vh, 18px) 2px min(1.2vh, 10px); }
 .status { margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--soft); display: flex; align-items: center; gap: 6px; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--off); transition: background-color 200ms ease; }
 .dot.live { background: var(--live); }
@@ -87,6 +87,8 @@ svg .fill { fill: currentColor; stroke: none; }
 /* ------------------------------------------------------------ recent apps */
 
 .recents {
+  /* The body is a column that fills the screen; never squash the strip to make room. */
+  flex-shrink: 0;
   display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 10px;
   scrollbar-width: none; -webkit-overflow-scrolling: touch;
 }
@@ -111,15 +113,16 @@ svg .fill { fill: currentColor; stroke: none; }
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: min(5vh, 28px);
-  padding: 8px 0 24px;
+  /* Sized by screen height too, so the whole remote fits a phone with the recent strip showing. */
+  gap: min(2.6vh, 28px);
+  padding: 4px 0 min(2vh, 24px);
   transition: opacity 200ms ease;
 }
 .remote.off { opacity: 0.55; }
 
 .pad {
   position: relative;
-  width: min(78vw, 46vh, 320px);
+  width: min(74vw, 34vh, 320px);
   aspect-ratio: 1;
   border-radius: 50%;
   background: var(--face);
@@ -149,7 +152,7 @@ svg .fill { fill: currentColor; stroke: none; }
 }
 .pad[data-dir="ok"] .ok { background: var(--press); transform: translate(-50%, -50%) scale(0.95); }
 
-.grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px 42px; }
+.grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: min(1.6vh, 16px) 42px; }
 
 .key {
   width: 64px; height: 64px; border-radius: 50%;
