@@ -7,12 +7,23 @@ import Foundation
 /// all record from the microphone during a call, so that is the signal. It is read per app
 /// (Core Audio process objects), so music playing through a headset does not count, and
 /// Couch's own voice search is left out by process id. Nothing is recorded or stored.
+///
+/// macOS's own services (Siri and dictation listening in corespeechd, for one) switch the
+/// microphone on for a moment during ordinary use, like copying text. Those never count, and the
+/// microphone must stay busy for a few seconds before it counts as a call.
 @MainActor
 final class MicWatcher {
     var onChange: ((Bool) -> Void)?
     private(set) var inUseByOthers = false
     private var timer: Timer?
     private static let pollSeconds = 2.0
+    /// Readings in a row that must agree before the state changes: about 4 seconds.
+    private static let confirmReadings = 2
+    private var streak = 0
+    /// Where macOS keeps its own background services; apps live elsewhere.
+    nonisolated private static let systemServiceFolders = ["/System/Library/", "/usr/", "/Library/Apple/"]
+    /// The macOS services that do the recording for FaceTime and for iPhone calls on the Mac: those are calls.
+    nonisolated private static let callServices: Set<String> = ["avconferenced", "callservicesd"]
 
     func start() {
         timer = Timer.scheduledTimer(withTimeInterval: Self.pollSeconds, repeats: true) { [weak self] _ in
@@ -22,19 +33,36 @@ final class MicWatcher {
     }
 
     private func check() {
-        let busy = Self.otherProcessRecording()
-        guard busy != inUseByOthers else { return }
+        let busy = Self.otherAppRecording()
+        guard busy != inUseByOthers else {
+            streak = 0
+            return
+        }
+        streak += 1
+        guard streak >= Self.confirmReadings else { return }
+        streak = 0
         inUseByOthers = busy
         onChange?(busy)
     }
 
-    nonisolated private static func otherProcessRecording() -> Bool {
+    nonisolated private static func otherAppRecording() -> Bool {
         let me = ProcessInfo.processInfo.processIdentifier
         return processObjects().contains { process in
             guard let pid: pid_t = property(process, kAudioProcessPropertyPID), pid != me else { return false }
             let running: UInt32? = property(process, kAudioProcessPropertyIsRunningInput)
-            return (running ?? 0) != 0
+            return (running ?? 0) != 0 && !isSystemService(pid)
         }
+    }
+
+    nonisolated static func isSystemService(_ pid: pid_t) -> Bool {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return false }
+        return isSystemServicePath(String(cString: buffer))
+    }
+
+    nonisolated static func isSystemServicePath(_ path: String) -> Bool {
+        if callServices.contains((path as NSString).lastPathComponent) { return false }
+        return systemServiceFolders.contains { path.hasPrefix($0) }
     }
 
     nonisolated private static func processObjects() -> [AudioObjectID] {
