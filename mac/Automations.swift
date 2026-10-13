@@ -44,7 +44,12 @@ final class Automations: ObservableObject {
     private var sleepAssertion: IOPMAssertionID = 0
     private var clock: Timer?
     private var lastWakeDay: String?
-    private var pausedFor: Set<PauseReason> = []
+    /// Reasons going on now (a call, a locked Mac), whether or not they paused anything.
+    private var pauseReasons: Set<PauseReason> = []
+    /// True only when Couch itself paused the TV, so it never plays a TV the user paused.
+    private var pausedByCouch = false
+    /// Waiting on the helper's answer to "pause if playing".
+    private var askingToPause = false
     private var lockObservers: [NSObjectProtocol] = []
 
     private static let defaultWakeMinute = 7 * 60
@@ -75,6 +80,7 @@ final class Automations: ObservableObject {
             }
         }
         watchLock()
+        client.onAutoPause = { [weak self] paused in self?.autoPaused(paused) }
         mic.onChange = { [weak self] busy in
             guard let self else { return }
             if busy {
@@ -172,15 +178,34 @@ final class Automations: ObservableObject {
 
     // MARK: auto pause
 
+    /// Some TV apps (Netflix for one) take the pause key as play/pause, so a blind pause starts a
+    /// paused TV. The helper presses only when the app reports it is playing.
     private func pause(for reason: PauseReason) {
-        guard client.state.isConnected, client.state.isOn == true, !pausedFor.contains(reason) else { return }
-        if pausedFor.isEmpty { client.press(.pause) }
-        pausedFor.insert(reason)
+        guard client.state.isConnected, client.state.isOn == true else { return }
+        pauseReasons.insert(reason)
+        // Already paused by Couch, or an ask is on its way that covers this reason too.
+        guard !pausedByCouch, !askingToPause else { return }
+        askingToPause = client.pauseIfPlaying()
+    }
+
+    private func autoPaused(_ paused: Bool) {
+        askingToPause = false
+        guard paused else { return }
+        pausedByCouch = true
+        // Every reason ended while the helper was checking (a short dictation): finish now.
+        if pauseReasons.isEmpty { playIfPausedByCouch() }
     }
 
     private func resume(after reason: PauseReason) {
-        guard pausedFor.remove(reason) != nil, pausedFor.isEmpty, resumeAfterPause,
-              client.state.isConnected, client.state.isOn == true else { return }
+        guard pauseReasons.remove(reason) != nil, pauseReasons.isEmpty else { return }
+        // While an ask is out, its answer decides (autoPaused).
+        if !askingToPause { playIfPausedByCouch() }
+    }
+
+    private func playIfPausedByCouch() {
+        guard pausedByCouch else { return }
+        pausedByCouch = false
+        guard resumeAfterPause, client.state.isConnected, client.state.isOn == true else { return }
         client.press(.play)
     }
 

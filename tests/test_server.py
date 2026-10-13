@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 import server
-from apps import AppsStatus
+from apps import AppsError, AppsStatus
 from errors import UserError
 from handlers_apps import APPS_HANDLERS
 from tv import KNOWN_APPS
@@ -142,3 +142,57 @@ def test_a_failed_lookup_keeps_the_strip():
         await session.push_recents()
         return sent
     assert asyncio.run(check()) == []
+
+
+@pytest.mark.parametrize("apps_status, app, playing, pressed", [
+    (AppsStatus.READY, "com.example.player", True, True),
+    (AppsStatus.READY, "com.example.player", False, False),  # paused: the pause key would start some apps
+    (AppsStatus.READY, "com.example.player", None, False),  # no media session, nobody can tell
+    (AppsStatus.READY, None, True, False),  # the TV did not say which app is in front
+    (AppsStatus.OFF, "com.example.player", True, False),  # no app manager: leave the TV alone
+    (AppsStatus.READY, "com.example.player", AppsError("Lost the connection"), False),
+])
+def test_auto_pause_presses_only_when_playing(apps_status, app, playing, pressed):
+    async def check():
+        session = server.TVSession(None, None)
+        session.status = "connected"
+        session.remote = type("Remote", (), {"current_app": app})()
+        session.apps.status = apps_status
+        keys, replies, asked = [], [], []
+
+        async def is_playing(package):
+            asked.append(package)
+            if isinstance(playing, Exception):
+                raise playing
+            return playing
+
+        class Socket:
+            async def send_json(self, message):
+                replies.append(message)
+
+        session.apps.playing = is_playing
+        session.send_key = keys.append
+        await APPS_HANDLERS["pause_if_playing"](session, Socket(), {})
+        return keys, replies, asked
+    keys, replies, asked = asyncio.run(check())
+    assert keys == (["MEDIA_PAUSE"] if pressed else [])
+    assert replies == [{"type": "auto_pause", "paused": pressed}]
+    assert asked == ([app] if apps_status == AppsStatus.READY and app else [])
+
+
+def test_auto_pause_answers_when_the_tv_is_gone():
+    async def check():
+        session = server.TVSession(None, None)  # never connected
+        replies = []
+
+        class Socket:
+            async def send_json(self, message):
+                replies.append(message)
+
+        await APPS_HANDLERS["pause_if_playing"](session, Socket(), {})
+        return replies
+    assert asyncio.run(check()) == [{"type": "auto_pause", "paused": False}]
+
+
+def test_auto_pause_stays_off_the_phone():
+    assert "pause_if_playing" in APPS_HANDLERS and "pause_if_playing" not in server.PHONE_HANDLERS

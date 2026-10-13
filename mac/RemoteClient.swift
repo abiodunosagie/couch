@@ -117,6 +117,10 @@ private struct VoiceMessage: Decodable {
     let listening: Bool
 }
 
+private struct AutoPauseMessage: Decodable {
+    let paused: Bool
+}
+
 /// The TV's app manager (Android debugging) as the helper reports it.
 enum AppsLink: String, Decodable {
     case unknown, off, waiting, ready, denied, pairing
@@ -176,12 +180,16 @@ final class RemoteClient: ObservableObject {
     var onAppsConnectFailed: ((AppsLink) -> Void)?
     /// Called when the TV stops taking voice (released, timed out, or the TV dropped).
     var onListeningEnded: (() -> Void)?
+    /// Answer to `pauseIfPlaying`: whether the TV was playing and got paused. Also false when the
+    /// link drops before the answer comes.
+    var onAutoPause: ((Bool) -> Void)?
 
     private let token: String
     private var task: URLSessionWebSocketTask?
     private var toastClear: Task<Void, Never>?
     private var retryDelay = RemoteClient.firstRetry
     private var pendingLaunchLink: String?
+    private var autoPauseAsked = false
     /// A Connect the user asked for, so its failure can be explained.
     private var connectingApps = false
     /// Microphone audio recorded before the TV starts listening.
@@ -254,6 +262,9 @@ final class RemoteClient: ObservableObject {
             recentApps = (try? JSONDecoder().decode(RecentsMessage.self, from: data))?.apps ?? recentApps
         case "apps_launched":
             pendingLaunchLink = nil
+        case "auto_pause":
+            autoPauseAsked = false
+            onAutoPause?((try? JSONDecoder().decode(AutoPauseMessage.self, from: data))?.paused ?? false)
         case "apps_uninstalled":
             if let package = try? JSONDecoder().decode(PackageMessage.self, from: data).package {
                 onUninstalled?(package)
@@ -275,6 +286,12 @@ final class RemoteClient: ObservableObject {
                 if !voiceRequested { send(["type": "voice_end"]) }
             }
         case "error":
+            if envelope.for == "pause_if_playing" {
+                // Turned away (the helper was busy): nothing paused, and auto pause runs on its own, so no toast.
+                autoPauseAsked = false
+                onAutoPause?(false)
+                return
+            }
             if envelope.for == "apps_launch", let link = pendingLaunchLink {
                 // The app manager could not open it; the app's web link still can.
                 pendingLaunchLink = nil
@@ -304,6 +321,10 @@ final class RemoteClient: ObservableObject {
         listening = false
         voiceRequested = false
         heldAudio.removeAll()
+        if autoPauseAsked {
+            autoPauseAsked = false
+            onAutoPause?(false)
+        }
         state.status = .searching
         await onLinkLost?()
         try? await Task.sleep(nanoseconds: retryDelay)
@@ -325,6 +346,15 @@ final class RemoteClient: ObservableObject {
     func press(_ key: RemoteKey) {
         guard requireConnected() else { return }
         send(["type": "key", "key": key.rawValue])
+    }
+
+    /// Pause only if the TV app says it is playing (the helper checks, then presses). The answer
+    /// comes through `onAutoPause`. No toast when it cannot be sent, since it runs on its own
+    /// (`linkUp` is checked first, so `send` does not show one); false when it was not sent.
+    func pauseIfPlaying() -> Bool {
+        guard state.isConnected, linkUp, !autoPauseAsked else { return false }
+        autoPauseAsked = send(["type": "pause_if_playing"])
+        return autoPauseAsked
     }
 
     /// Insert text at the cursor of the TV text box.

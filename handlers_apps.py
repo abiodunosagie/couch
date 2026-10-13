@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
+from androidtvremote2 import ConnectionClosed
 
 from apps import AppsError, AppsManager, AppsStatus
 from errors import UserError
@@ -112,6 +113,26 @@ async def _resume(session: TVSession, _ws: web.WebSocketResponse, message: dict[
     await manager.launch(package)
 
 
+async def _pause_if_playing(session: TVSession, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    """Auto pause. Some TV apps (Netflix for one) take the pause key as play/pause, so a pause
+    sent to a paused TV starts it. Press only when the app says it is playing; when nobody can
+    tell (no app manager, no app in front, no media session), leave the TV alone. Answers whether
+    it paused, so the Mac only resumes what it paused. Quiet on failure: this runs on its own, not
+    on a click."""
+    paused = False
+    try:
+        app = session.require_connected().current_app
+        if app and session.apps.status == AppsStatus.READY and await session.apps.playing(app):
+            session.send_key("MEDIA_PAUSE")
+            paused = True
+    except (UserError, AppsError, ConnectionClosed) as exc:
+        log.info("auto pause skipped: %s", exc)
+    finally:
+        # Always answer, so the Mac never waits on this for good. Errors not caught above still
+        # reach run_handler after this.
+        await reply(ws, {"type": "auto_pause", "paused": paused})
+
+
 @apps_handler
 async def _close_app(session: TVSession, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
     await _app_manager(session).close_app(message.get("package"))
@@ -209,6 +230,7 @@ APPS_HANDLERS: dict[str, Handler] = {
     "recents": _recents,
     "resume": _resume,
     "close_app": _close_app,
+    "pause_if_playing": _pause_if_playing,
     "tools_status": _tools_status,
     "tweak": _tool(_tweak),
     "tweaks_reset": _tool(_reset),

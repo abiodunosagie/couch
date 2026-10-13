@@ -177,6 +177,32 @@ def parse_task_ids(output: str, package: str) -> list[int]:
     return ids
 
 
+# Android PlaybackState codes where media is moving: playing, fast forwarding, rewinding, buffering.
+MOVING_STATES = frozenset({3, 4, 5, 6})
+
+
+def parse_playing(output: str, package: str) -> bool | None:
+    """Whether `package` is playing, from `dumpsys media_session`.
+
+    Each session lists "package=..." and then "state=PlaybackState {state=PAUSED(2), ...". An app
+    can hold several sessions; one moving is enough. None when the app has no media session, so
+    nobody can tell.
+    """
+    found = False
+    current: str | None = None
+    for line in output.splitlines():
+        owner = re.match(r"\s+package=([A-Za-z0-9_.]+)\s*$", line)
+        if owner:
+            current = owner.group(1)
+            continue
+        state = re.match(r"\s+state=PlaybackState \{state=\w+\((\d+)\)", line)
+        if state and current == package:
+            found = True
+            if int(state.group(1)) in MOVING_STATES:
+                return True
+    return False if found else None
+
+
 def find_adb() -> str | None:
     for path in ADB_LOCATIONS:
         if Path(path).is_file():
@@ -473,6 +499,11 @@ class AppsManager:
     async def recents(self, hidden: frozenset[str] = frozenset()) -> list[dict]:
         (output,) = await self.shell("dumpsys activity recents")
         return parse_recents(output, hidden)
+
+    async def playing(self, package: str) -> bool | None:
+        """Whether the app is playing media right now; None when the TV cannot say."""
+        (output,) = await self.shell("dumpsys media_session")
+        return parse_playing(output, package)
 
     async def close_app(self, package: object) -> None:
         """Stop an app, free its memory and take it off the recent list. It stays installed."""

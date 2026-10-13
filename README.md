@@ -49,7 +49,7 @@ The remote that ships with the Chromecast is easy to lose and hard to type with.
 
 **Automation**
 - Sleep timer and a daily wake up time that can open an app.
-- Pauses the TV when you join a call, and can resume afterwards. Pausing when you lock the Mac is there too, off unless you turn it on.
+- Pauses the TV when you join a call, and can resume afterwards. Pausing when you lock the Mac is there too, off unless you turn it on. It only pauses what is playing, so a TV you already paused stays paused.
 - Scenes: one click runs a list of steps, like "Movie night" (TV on, wait, open Netflix).
 - `couch://` links for Shortcuts and scripts, with a confirmation before anything reaches the TV.
 
@@ -161,6 +161,7 @@ known_apps.json app names and launch links, shared by every part
 ## Limitations
 
 - Timers and auto pause run while the Mac is awake.
+- Auto pause needs the app manager (adb), since the remote protocol does not say whether the TV is playing. Without it the TV is left alone.
 - The TV reports no volume level through this protocol, so the volume sign shows direction only.
 - Copying text off the TV is not possible.
 - Voice on the phone page needs HTTPS, so it stays on the Mac for now.

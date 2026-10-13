@@ -117,3 +117,52 @@ def test_install_notices_a_lost_device():
     manager = _ready_manager({"/x.apk": "adb: device offline\n"})
     with pytest.raises(AppsError, match="Lost the connection"):
         asyncio.run(manager.device_command("install", "-r", "/x.apk", timeout=5))
+
+
+
+def _media_sample(*swaps: tuple[str, str]) -> str:
+    """A real `dumpsys media_session` from a Chromecast with Google TV, app names made generic,
+    with each (old, new) swap applied. A swap that matches nothing fails, so tests never pass by
+    accident."""
+    from pathlib import Path
+    sample = (Path(__file__).parent / "media_session_sample.txt").read_text()
+    for old, new in swaps:
+        assert sample.count(old) == 1, old
+        sample = sample.replace(old, new)
+    return sample
+
+
+PLAYER_PAUSED = "state=PAUSED(2), position=887446"
+FILMS_PAUSED = "state=PAUSED(2), position=1954000"
+
+
+def test_paused_app_is_not_playing():
+    from apps import parse_playing
+    assert parse_playing(_media_sample(), "com.example.player") is False
+
+
+def test_playing_app_is_playing():
+    from apps import parse_playing
+    sample = _media_sample((PLAYER_PAUSED, "state=PLAYING(3), position=887446"))
+    assert parse_playing(sample, "com.example.player") is True
+    # Only the named app counts: the other app is still paused.
+    assert parse_playing(sample, "com.example.films") is False
+
+
+def test_buffering_counts_as_playing():
+    from apps import parse_playing
+    sample = _media_sample((FILMS_PAUSED, "state=BUFFERING(6), position=1954000"))
+    assert parse_playing(sample, "com.example.films") is True
+
+
+def test_app_without_a_media_session_is_unknown():
+    from apps import parse_playing
+    assert parse_playing(_media_sample(), "com.google.android.youtube.tv") is None
+    assert parse_playing("", "com.example.player") is None
+
+
+def test_one_playing_session_of_several_is_enough():
+    from apps import parse_playing
+    sample = _media_sample(("state=ERROR(7), position=0, buffered position=0, speed=0.0, updated=31889",
+                            "state=PLAYING(3), position=0, buffered position=0, speed=0.0, updated=31889"))
+    assert parse_playing(sample, "com.google.android.bluetooth") is True
