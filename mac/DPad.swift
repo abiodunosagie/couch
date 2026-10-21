@@ -46,7 +46,7 @@ struct DPad: View {
                 .onEnded { _ in release() }
         )
         // If the window hides mid-press the gesture may never end; drop the pressed state with the repeater.
-        .onChange(of: repeater.running) { if !repeater.running && active?.repeats == true { active = nil } }
+        .onChange(of: repeater.running) { dropStalePress() }
         .onDisappear(perform: release)
         .animation(.easeOut(duration: 0.08), value: active)
         .help("Arrow keys move, Return selects")
@@ -57,6 +57,13 @@ struct DPad: View {
         .accessibilityAction(named: "Left") { press(.left) }
         .accessibilityAction(named: "Right") { press(.right) }
         .accessibilityAction(named: "Select") { press(.select) }
+    }
+
+    /// Clears a held repeating key once its repeater has stopped. A named method rather than an inline
+    /// closure: Swift 6.3 timed out type-checking the one-line version.
+    private func dropStalePress() {
+        guard !repeater.running, let key = active, key.repeats else { return }
+        active = nil
     }
 
     private func release() {
