@@ -13,7 +13,7 @@ import SwiftUI
 final class MenuPanel: NSObject, NSWindowDelegate {
     private let panel: NSPanel
     private let model: AppModel
-    private let host: NSHostingView<MenuPanelView>
+    private let host: NSHostingView<Branded<MenuPanelView>>
     private var lastClosed = Date.distantPast
     private var contentWatch: AnyCancellable?
 
@@ -32,7 +32,7 @@ final class MenuPanel: NSObject, NSWindowDelegate {
 
     init(model: AppModel, openWindow: @escaping () -> Void, quit: @escaping () -> Void) {
         self.model = model
-        host = NSHostingView(rootView: MenuPanelView(model: model, openWindow: openWindow, quit: quit))
+        host = NSHostingView(rootView: Branded(MenuPanelView(model: model, openWindow: openWindow, quit: quit)))
         panel = KeyablePanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         super.init()
         panel.isFloatingPanel = true

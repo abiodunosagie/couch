@@ -47,8 +47,8 @@ struct TypingPanel: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(compact ? 12 : 16)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.accentColor.opacity(0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.accentColor.opacity(0.5)))
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Brand.accent.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Brand.accent.opacity(0.5)))
     }
 
     /// The TV text box, as the TV last reported it.
@@ -56,7 +56,7 @@ struct TypingPanel: View {
         Group {
             if let field, field.active {
                 (Text(model.hideFieldText ? String(repeating: "•", count: field.value.count) : field.value)
-                    + Text("|").foregroundStyle(Color.accentColor))
+                    + Text("|").foregroundStyle(Brand.accent))
                     .font(.system(size: compact ? 14 : 17, weight: .medium, design: .rounded))
                     .lineLimit(3)
                     .truncationMode(.head)
@@ -152,7 +152,7 @@ struct FinishPicker: View {
                     Circle()
                         .fill(option.body)
                         .overlay(Circle().strokeBorder(option.edge, lineWidth: 1))
-                        .overlay(Circle().strokeBorder(Color.accentColor, lineWidth: finish == option ? 2 : 0).padding(-3))
+                        .overlay(Circle().strokeBorder(Brand.accent, lineWidth: finish == option ? 2 : 0).padding(-3))
                         .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.plain)

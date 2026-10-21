@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  helper:
+    name: Helper tests (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: pipx install uv
+      - run: uv sync --locked
+      - run: uv run pytest -q
+
+  app:
+    name: Mac app compiles
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: xcrun swiftc -O -parse-as-library -target arm64-apple-macos15.0 -o Couch mac/*.swift -framework AppKit -framework SwiftUI
+      - run: xcrun swift tools/make-icon.swift Couch.iconset && iconutil -c icns Couch.iconset -o Couch.icns

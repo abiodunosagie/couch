@@ -1,8 +1,6 @@
-<p align="center">
-  <img src="phone/icon.png" width="112" alt="Couch app icon">
-</p>
+<img src="brand/banner.svg" alt="Couch: a native Mac remote for Google TV" width="100%">
 
-<h1 align="center">Couch</h1>
+<p align="center"><a href="https://github.com/abiodunosagie/couch/actions/workflows/ci.yml"><img src="https://github.com/abiodunosagie/couch/actions/workflows/ci.yml/badge.svg" alt="CI"></a></p>
 
 <p align="center">
   A native Mac remote for Chromecast with Google TV.<br>
@@ -156,6 +154,8 @@ phone.py        phone page server
 phone/          phone page (HTML, CSS, JS)
 tv.py           discovery, pairing, shared app table
 known_apps.json app names and launch links, shared by every part
+brand/          logo masters, banner and brand guidelines (python3 brand/generate.py)
+tools/          make-icon.swift draws the app and phone icons
 ```
 
 ## Limitations

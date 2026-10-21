@@ -104,7 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.title = "Couch"
             window.titlebarAppearsTransparent = true
             window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: MainWindowView(model: model))
+            window.contentView = NSHostingView(rootView: Branded(MainWindowView(model: model)))
             window.setFrameAutosaveName("CouchMainWindow")
             if !window.setFrameUsingName("CouchMainWindow") { window.center() }
             window.delegate = self
@@ -122,10 +122,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let window, window.attachedSheet == nil else { return }
         let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 600),
                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        sheet.contentView = NSHostingView(rootView: AppsManagerView(model: model) { [weak self, weak sheet] in
+        sheet.contentView = NSHostingView(rootView: Branded(AppsManagerView(model: model) { [weak self, weak sheet] in
             guard let self, let sheet else { return }
             self.window?.endSheet(sheet)
-        })
+        }))
         window.beginSheet(sheet) { [weak self] _ in
             MainActor.assumeIsolated { self?.model.showingApps = false }
         }
@@ -181,8 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func updateStatusIcon(_ state: TVState, linkUp: Bool) {
         guard let button = statusItem?.button else { return }
         let live = linkUp && state.isConnected && state.isOn != false
-        button.image = NSImage(systemSymbolName: live ? "appletvremote.gen4.fill" : "appletvremote.gen4",
-                               accessibilityDescription: "Couch")
+        button.image = Brand.menuBarImage(live: live)
         let tv = state.tv ?? "TV"
         let detail: String
         if !linkUp || !state.isConnected {

@@ -12,7 +12,7 @@
   --off: #9a938a;
   --sheet: rgba(250, 248, 244, 0.94);
   --field: #ffffff;
-  --accent: #2f6fe0;
+  --accent: #a8432e; /* Couch terracotta, brand/BRAND.md */
   color-scheme: light;
 }
 
@@ -28,7 +28,7 @@
     --dark: #0d0d0c;
     --sheet: rgba(36, 34, 32, 0.95);
     --field: #1d1c1a;
-    --accent: #6c9cf2;
+    --accent: #ee8e73; /* Couch coral */
     color-scheme: dark;
   }
 }
@@ -44,7 +44,7 @@
   --dark: #0d0d0c;
   --sheet: rgba(36, 34, 32, 0.95);
   --field: #1d1c1a;
-  --accent: #6c9cf2;
+  --accent: #ee8e73;
   color-scheme: dark;
 }
 

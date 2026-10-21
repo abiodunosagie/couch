@@ -86,7 +86,7 @@ struct TVToolsView: View {
             .padding(12)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5]))
-                .foregroundStyle(dropTargeted ? Color.accentColor : Color.secondary.opacity(0.5)))
+                .foregroundStyle(dropTargeted ? Brand.accent : Color.secondary.opacity(0.5)))
             .dropDestination(for: URL.self) { urls, _ in
                 // One install at a time, like the Choose File button.
                 guard !client.installing,
@@ -128,7 +128,7 @@ struct TVToolsView: View {
                 Text("\(Self.bytes(amount.free)) free of \(Self.bytes(amount.total))").foregroundStyle(.secondary)
             }
             .font(.callout)
-            ProgressView(value: used).tint(used > 0.85 ? .orange : .accentColor)
+            ProgressView(value: used).tint(used > 0.85 ? .orange : Brand.accent)
         }
         .frame(maxWidth: 340)
     }

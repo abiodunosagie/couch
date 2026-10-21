@@ -30,7 +30,7 @@ xcrun swiftc -O -parse-as-library -target arm64-apple-macos15.0 \
 
 echo "Drawing icon..."
 rm -rf "$BUILD/Couch.iconset"
-xcrun swift "$PROJECT/tools/make-icon.swift" "$BUILD/Couch.iconset"
+xcrun swift "$PROJECT/tools/make-icon.swift" "$BUILD/Couch.iconset" "$PROJECT/phone/icon.png"
 iconutil -c icns "$BUILD/Couch.iconset" -o "$BUILD/Couch.icns"
 
 # Quit the installed app (it stops its helper), and any helper an older build left on the
