@@ -24,7 +24,8 @@ jobs:
 
   app:
     name: Mac app compiles
-    runs-on: macos-latest
+    # Same OS and Swift (6.4) the app is developed on; macos-latest still ships Xcode 26 / Swift 6.3.
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: xcrun swiftc -O -parse-as-library -target arm64-apple-macos15.0 -o Couch mac/*.swift -framework AppKit -framework SwiftUI

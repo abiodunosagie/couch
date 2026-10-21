@@ -11,7 +11,21 @@ struct DPad: View {
     @State private var active: RemoteKey?
     @StateObject private var repeater = Repeater()
 
+    // Split into small parts: Swift 6.3 timed out type-checking this view as one long expression.
     var body: some View {
+        face
+            .frame(width: Self.size, height: Self.size)
+            .contentShape(Circle())
+            .gesture(pressGesture)
+            // If the window hides mid-press the gesture may never end; drop the pressed state with the repeater.
+            .onChange(of: repeater.running) { dropStalePress() }
+            .onDisappear(perform: release)
+            .animation(.easeOut(duration: 0.08), value: active)
+            .help("Arrow keys move, Return selects")
+            .modifier(DPadAccessibility(press: press))
+    }
+
+    private var face: some View {
         ZStack {
             Circle()
                 .fill(finish.face)
@@ -29,38 +43,26 @@ struct DPad: View {
                 .frame(width: Self.centerSize, height: Self.centerSize)
                 .scaleEffect(active == .select ? 0.95 : 1)
         }
-        .frame(width: Self.size, height: Self.size)
-        .contentShape(Circle())
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    guard active == nil else { return }
-                    let key = Self.key(at: value.startLocation)
-                    active = key
-                    if key.repeats {
-                        repeater.start { press(key) }
-                    } else {
-                        press(key)
-                    }
-                }
-                .onEnded { _ in release() }
-        )
-        // If the window hides mid-press the gesture may never end; drop the pressed state with the repeater.
-        .onChange(of: repeater.running) { dropStalePress() }
-        .onDisappear(perform: release)
-        .animation(.easeOut(duration: 0.08), value: active)
-        .help("Arrow keys move, Return selects")
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Direction pad")
-        .accessibilityAction(named: "Up") { press(.up) }
-        .accessibilityAction(named: "Down") { press(.down) }
-        .accessibilityAction(named: "Left") { press(.left) }
-        .accessibilityAction(named: "Right") { press(.right) }
-        .accessibilityAction(named: "Select") { press(.select) }
     }
 
-    /// Clears a held repeating key once its repeater has stopped. A named method rather than an inline
-    /// closure: Swift 6.3 timed out type-checking the one-line version.
+    private var pressGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in pressBegan(at: value.startLocation) }
+            .onEnded { _ in release() }
+    }
+
+    private func pressBegan(at point: CGPoint) {
+        guard active == nil else { return }
+        let key = Self.key(at: point)
+        active = key
+        if key.repeats {
+            repeater.start { press(key) }
+        } else {
+            press(key)
+        }
+    }
+
+    /// Clears a held repeating key once its repeater has stopped.
     private func dropStalePress() {
         guard !repeater.running, let key = active, key.repeats else { return }
         active = nil
@@ -104,5 +106,21 @@ private struct Wedge: Shape {
         path.addArc(center: mid, radius: inner, startAngle: .degrees(center + 45), endAngle: .degrees(center - 45), clockwise: true)
         path.closeSubpath()
         return path
+    }
+}
+
+/// VoiceOver for the pad: one element with an action per direction.
+private struct DPadAccessibility: ViewModifier {
+    let press: (RemoteKey) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Direction pad")
+            .accessibilityAction(named: "Up") { press(.up) }
+            .accessibilityAction(named: "Down") { press(.down) }
+            .accessibilityAction(named: "Left") { press(.left) }
+            .accessibilityAction(named: "Right") { press(.right) }
+            .accessibilityAction(named: "Select") { press(.select) }
     }
 }
